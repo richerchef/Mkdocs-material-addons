@@ -1,48 +1,69 @@
-document.addEventListener("DOMContentLoaded", async () => {
-  try {
-    const response = await fetch("/glossary.json");
-    const globalGlossary = await response.json();
+(function () {
+  async function loadGlossary() {
+    const response = await fetch("glossary.json");
+    return response.json();
+  }
 
-    const contentEl = document.querySelector(".md-content__inner");
-    if (!contentEl) return;
+  function applyGlossary(mergedGlossary) {
+    const textNodes = [];
 
-    // 1. Extract per-page glossary overrides
-    const html = contentEl.innerHTML;
-    const pageGlossary = {};
-    const regex = /\*\[([^\]]+)\]:\s*(.+)/g;
-    let match;
-    while ((match = regex.exec(html)) !== null) {
-      pageGlossary[match[1].trim()] = match[2].trim();
+    // Recursively find text nodes (excluding code-like elements)
+    function getTextNodes(node) {
+      if (
+        node.nodeType === 3 &&
+        node.parentNode &&
+        !["CODE", "PRE", "SCRIPT", "STYLE", "SVG"].includes(node.parentNode.nodeName)
+      ) {
+        textNodes.push(node);
+      } else {
+        node.childNodes.forEach(getTextNodes);
+      }
     }
 
-    // Remove reference lines
-    contentEl.innerHTML = html.replace(regex, "");
+    const contentRoot = document.querySelector("article");
+    if (!contentRoot) return;
+    getTextNodes(contentRoot);
 
-    // Merge global + page-specific (page overrides global)
-    const glossary = { ...globalGlossary, ...pageGlossary };
+    textNodes.forEach((textNode) => {
+      let replacedText = textNode.textContent;
+      for (const [term, definition] of Object.entries(mergedGlossary)) {
+        const regex = new RegExp(`\\b${term}\\b`, "g");
+        replacedText = replacedText.replace(
+          regex,
+          `<abbr title="${definition}">${term}</abbr>`
+        );
+      }
 
-    // 2. Walk the DOM text nodes and replace only text outside <abbr> or <code>
-    const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, null);
-    const nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
-
-    nodes.forEach(node => {
-      if (node.parentNode.tagName === "ABBR" || node.parentNode.tagName === "CODE") return;
-
-      let text = node.nodeValue;
-      Object.entries(glossary).forEach(([term, def]) => {
-        const regex = new RegExp(`\\b(${term})\\b`, "g");
-        text = text.replace(regex, `<abbr title="${def}" class="glossary-term">$1</abbr>`);
-      });
-
-      if (text !== node.nodeValue) {
+      if (replacedText !== textNode.textContent) {
         const span = document.createElement("span");
-        span.innerHTML = text;
-        node.replaceWith(span);
+        span.innerHTML = replacedText;
+        textNode.parentNode.replaceChild(span, textNode);
       }
     });
-
-  } catch (err) {
-    console.error("Glossary loading error:", err);
   }
-});
+
+  async function initGlossary() {
+    const glossary = await loadGlossary();
+
+    // Page-specific overrides (using abbr tags)
+    const pageGlossary = {};
+    document.querySelectorAll("abbr[title]").forEach((abbr) => {
+      pageGlossary[abbr.textContent.trim()] = abbr.getAttribute("title");
+    });
+
+    const mergedGlossary = { ...glossary, ...pageGlossary };
+    applyGlossary(mergedGlossary);
+  }
+
+  // Run when page is loaded *and* when Material reloads content
+  window.addEventListener("load", initGlossary);
+
+  // MkDocs Material instant navigation hook
+  document.addEventListener("DOMContentLoaded", () => {
+    if (typeof document$.subscribe === "function") {
+      document$.subscribe(() => {
+        initGlossary();
+      });
+    }
+  });
+})();
