@@ -1,5 +1,5 @@
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import sys
 import pickle
 
@@ -60,22 +60,37 @@ for scenario in scenarios:
     
     x_fit, y_fit, coeffs_list = compress_timeseries(x, y, chunk_size, poly_degree)
     
-    # Estimate compression
+    # Compression stats
     raw_size = estimate_size(y)
     compressed_size = estimate_size(coeffs_list)
     compression_ratio = compressed_size / raw_size
-    
     print(f"Raw size:        {raw_size/1024:.2f} KB")
     print(f"Compressed size: {compressed_size/1024:.2f} KB")
     print(f"Compression ratio: {compression_ratio:.3f} ({(1-compression_ratio)*100:.1f}% smaller)")
     
-    # Plot
-    plt.figure(figsize=(12, 5))
-    plt.plot(x, y, label="Raw data", alpha=0.6)
-    plt.plot(x_fit, y_fit, label=f"Thumbnail (deg={poly_degree})", linewidth=2)
-    plt.title(f"Mathematical Thumbnail Compression – {scenario.replace('_', ' ').title()}")
-    plt.xlabel("Time")
-    plt.ylabel("Value")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+    # === Plotly visualization ===
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y,
+        mode="lines",
+        name="Raw Data",
+        line=dict(color="royalblue", width=1),
+        opacity=0.6
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_fit, y=y_fit,
+        mode="lines",
+        name=f"Thumbnail (deg={poly_degree})",
+        line=dict(color="orange", width=2)
+    ))
+
+    fig.update_layout(
+        title=f"Mathematical Thumbnail Compression – {scenario.replace('_', ' ').title()}",
+        xaxis_title="Time",
+        yaxis_title="Value",
+        legend=dict(x=0.01, y=0.99),
+        template="plotly_white",
+        width=900, height=450
+    )
+
+    fig.show()
