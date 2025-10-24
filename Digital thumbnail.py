@@ -1,7 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
 import sys
 import pickle
 
@@ -29,7 +27,7 @@ def simulate_data(scenario, n_points=2000):
 
 def compress_timeseries(x, y, chunk_size=100, poly_degree=3):
     """Fit polynomial models per chunk and reconstruct."""
-    models = []
+    coeffs_list = []
     x_fit = []
     y_fit = []
     
@@ -37,20 +35,18 @@ def compress_timeseries(x, y, chunk_size=100, poly_degree=3):
         x_chunk = x[i:i+chunk_size]
         y_chunk = y[i:i+chunk_size]
         
-        poly = PolynomialFeatures(degree=poly_degree)
-        X_poly = poly.fit_transform(x_chunk.reshape(-1, 1))
-        model = LinearRegression().fit(X_poly, y_chunk)
+        # Polynomial fit using NumPy
+        coeffs = np.polyfit(x_chunk, y_chunk, deg=poly_degree)
+        y_pred = np.polyval(coeffs, x_chunk)
         
-        y_pred = model.predict(X_poly)
+        coeffs_list.append(coeffs.tolist())
         x_fit.extend(x_chunk)
         y_fit.extend(y_pred)
-        
-        models.append(model.coef_.tolist() + [model.intercept_])
     
-    return np.array(x_fit), np.array(y_fit), models
+    return np.array(x_fit), np.array(y_fit), coeffs_list
 
 def estimate_size(obj):
-    """Rough estimate of memory footprint (bytes)."""
+    """Rough estimate of serialized object size (bytes)."""
     return sys.getsizeof(pickle.dumps(obj))
 
 # === Run scenarios ===
@@ -62,11 +58,11 @@ for scenario in scenarios:
     print(f"\n=== Scenario: {scenario} ===")
     x, y = simulate_data(scenario)
     
-    x_fit, y_fit, models = compress_timeseries(x, y, chunk_size, poly_degree)
+    x_fit, y_fit, coeffs_list = compress_timeseries(x, y, chunk_size, poly_degree)
     
-    # Estimate file sizes
+    # Estimate compression
     raw_size = estimate_size(y)
-    compressed_size = estimate_size(models)
+    compressed_size = estimate_size(coeffs_list)
     compression_ratio = compressed_size / raw_size
     
     print(f"Raw size:        {raw_size/1024:.2f} KB")
