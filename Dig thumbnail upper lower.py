@@ -1,125 +1,145 @@
 import numpy as np
+import json
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import time
+from pathlib import Path
 
-# --- Helper: generate sample scenarios ---
-def generate_scenarios(n_points=5000):
-    x = np.linspace(0, 20, n_points)
-    scenarios = {}
-
-    scenarios["Smooth sine"] = np.sin(x)
-    scenarios["Noisy sine"] = np.sin(x) + np.random.normal(0, 0.2, n_points)
-    scenarios["Drift + noise"] = 0.2*x + np.sin(x) + np.random.normal(0, 0.3, n_points)
-    scenarios["Pure noise (no baseline)"] = np.random.normal(0, 0.5, n_points)
-    scenarios["Spike anomalies"] = np.sin(x)
-    spike_idx = np.random.choice(n_points, 30, replace=False)
-    scenarios["Spike anomalies"][spike_idx] += np.random.normal(2, 0.5, 30)
-    return x, scenarios
+# ---------- CONFIG ----------
+SAVE_PATH = Path("compressed_timeseries.json")
+CHUNK_SIZE = 200
+MAX_DEGREE = 5
+ERROR_THRESHOLD = 0.005  # tune this to control compression quality
 
 
-# --- Chunked compression using np.polyfit ---
-def chunked_polyfit(x, y, chunk_size=1000, degree=5):
+# ---------- STEP 1: Generate Mock Data ----------
+def generate_timeseries(n_points=5000, scenario="normal"):
+    x = np.linspace(0, 100, n_points)
+    if scenario == "normal":
+        y = np.sin(x / 5) + np.random.normal(0, 0.1, n_points)
+    elif scenario == "noisy":
+        y = np.sin(x / 5) + np.random.normal(0, 0.3, n_points)
+    elif scenario == "trend":
+        y = 0.02 * x + np.sin(x / 4) + np.random.normal(0, 0.05, n_points)
+    elif scenario == "spikes":
+        y = np.sin(x / 5)
+        spikes = np.random.choice(n_points, size=30, replace=False)
+        y[spikes] += np.random.uniform(2, 4, size=len(spikes))
+    elif scenario == "flat":
+        y = np.random.normal(0, 0.05, n_points)
+    else:
+        raise ValueError("Unknown scenario")
+    return x, y
+
+
+# ---------- STEP 2: Adaptive Compression ----------
+def compress_timeseries_adaptive(x, y, chunk_size=CHUNK_SIZE, max_degree=MAX_DEGREE, error_threshold=ERROR_THRESHOLD):
+    compressed = []
     n_chunks = len(x) // chunk_size
-    fits = []
+
     for i in range(n_chunks):
         start, end = i * chunk_size, (i + 1) * chunk_size
-        x_chunk = x[start:end]
-        y_chunk = y[start:end]
+        x_chunk, y_chunk = x[start:end], y[start:end]
 
-        coeffs = np.polyfit(x_chunk, y_chunk, degree)
-        y_fit = np.polyval(coeffs, x_chunk)
+        best_degree, best_mse, best_coeffs = None, np.inf, None
+
+        # Try multiple polynomial degrees
+        for deg in range(1, max_degree + 1):
+            coeffs = np.polyfit(x_chunk, y_chunk, deg)
+            poly = np.poly1d(coeffs)
+            y_fit = poly(x_chunk)
+            mse = np.mean((y_fit - y_chunk) ** 2)
+
+            if mse < best_mse:
+                best_mse = mse
+                best_degree = deg
+                best_coeffs = coeffs
+
+            # Stop early if the fit is "good enough"
+            if mse < error_threshold:
+                break
+
+        # Compute bounds
+        poly_best = np.poly1d(best_coeffs)
+        y_fit = poly_best(x_chunk)
         residuals = y_chunk - y_fit
+        upper = np.max(residuals)
+        lower = np.min(residuals)
+        min_val = np.min(y_chunk)
+        max_val = np.max(y_chunk)
 
-        sigma = np.std(residuals)
-        y_upper = y_fit + sigma
-        y_lower = y_fit - sigma
-
-        # Outer bounds (based on actual max/min residuals)
-        y_outer_max = y_fit + np.max(residuals)
-        y_outer_min = y_fit + np.min(residuals)
-
-        fits.append({
-            "x": x_chunk,
-            "y_fit": y_fit,
-            "y_upper": y_upper,
-            "y_lower": y_lower,
-            "y_outer_max": y_outer_max,
-            "y_outer_min": y_outer_min,
-            "coeffs": coeffs
+        compressed.append({
+            "x_start": float(x_chunk[0]),
+            "x_end": float(x_chunk[-1]),
+            "coeffs": best_coeffs.tolist(),
+            "degree": best_degree,
+            "mse": float(best_mse),
+            "upper": float(upper),
+            "lower": float(lower),
+            "min": float(min_val),
+            "max": float(max_val)
         })
 
-    total_coeffs = n_chunks * (degree + 1)
-    ratio = total_coeffs / len(y)
-    return fits, ratio
+    return compressed
 
 
-# --- Generate and plot ---
-x, scenarios = generate_scenarios()
-rows = len(scenarios)
-fig = make_subplots(rows=rows, cols=1, shared_xaxes=True,
-                    subplot_titles=list(scenarios.keys()))
+# ---------- STEP 3: Save and Load JSON ----------
+def save_compressed(data, path=SAVE_PATH):
+    with open(path, "w") as f:
+        json.dump(data, f)
 
-# Measure timing
-timing_results = {}
 
-for row, (name, y) in enumerate(scenarios.items(), start=1):
-    # Raw plot timing
-    start_raw = time.perf_counter()
-    raw_trace = go.Scatter(x=x, y=y, mode='lines', line=dict(color='lightgray'))
-    end_raw = time.perf_counter()
-    raw_time = end_raw - start_raw
+def load_compressed(path=SAVE_PATH):
+    with open(path, "r") as f:
+        return json.load(f)
 
-    # Compressed timing
-    start_comp = time.perf_counter()
-    fits, ratio = chunked_polyfit(x, y, chunk_size=1000, degree=5)
-    comp_traces = []
-    for f in fits:
-        comp_traces.append(go.Scatter(
-            x=f["x"], y=f["y_fit"], mode='lines', line=dict(color='blue', width=2)))
-        # sigma bounds
-        comp_traces.append(go.Scatter(
-            x=np.concatenate([f["x"], f["x"][::-1]]),
-            y=np.concatenate([f["y_upper"], f["y_lower"][::-1]]),
-            fill='toself', fillcolor='rgba(0,0,255,0.1)',
-            line=dict(color='rgba(255,255,255,0)')))
-        # max/min bounds
-        comp_traces.append(go.Scatter(
-            x=np.concatenate([f["x"], f["x"][::-1]]),
-            y=np.concatenate([f["y_outer_max"], f["y_outer_min"][::-1]]),
-            fill='toself', fillcolor='rgba(255,0,0,0.1)',
-            line=dict(color='rgba(255,255,255,0)')))
-    end_comp = time.perf_counter()
-    comp_time = end_comp - start_comp
 
-    # Add traces to figure
-    fig.add_trace(raw_trace, row=row, col=1)
-    for t in comp_traces:
-        fig.add_trace(t, row=row, col=1)
+# ---------- STEP 4: Decompress ----------
+def decompress_timeseries(compressed_data, n_points_per_chunk=CHUNK_SIZE):
+    x_all, y_all, upper_all, lower_all = [], [], [], []
+    for chunk in compressed_data:
+        x_chunk = np.linspace(chunk["x_start"], chunk["x_end"], n_points_per_chunk)
+        poly = np.poly1d(chunk["coeffs"])
+        y_fit = poly(x_chunk)
+        y_upper = y_fit + chunk["upper"]
+        y_lower = y_fit + chunk["lower"]
 
-    timing_results[name] = {
-        "compression_ratio": ratio,
-        "raw_time": raw_time,
-        "compressed_time": comp_time
-    }
+        x_all.extend(x_chunk)
+        y_all.extend(y_fit)
+        upper_all.extend(y_upper)
+        lower_all.extend(y_lower)
 
-    fig.update_yaxes(title_text=name, row=row, col=1)
+    return np.array(x_all), np.array(y_all), np.array(upper_all), np.array(lower_all)
 
-# --- Layout ---
-fig.update_layout(
-    height=300 * rows,
-    title="Chunked Polynomial Compression with σ + Max/Min Bounds",
-    showlegend=False,
-    template="plotly_white"
-)
 
-fig.show()
+# ---------- STEP 5: Plot + Timing ----------
+def plot_comparison(x_raw, y_raw, compressed_data, scenario_name="Scenario"):
+    start = time.time()
+    x_c, y_c, y_upper, y_lower = decompress_timeseries(compressed_data)
+    compressed_time = time.time() - start
 
-# --- Print timing + compression stats ---
-print("=== Compression and Timing Results ===")
-for name, stats in timing_results.items():
-    print(f"{name}:")
-    print(f"  Compression ratio: {stats['compression_ratio']:.5f}")
-    print(f"  Plot (raw data): {stats['raw_time']*1000:.2f} ms")
-    print(f"  Plot (compressed): {stats['compressed_time']*1000:.2f} ms")
-    print()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x_raw, y=y_raw, mode='lines', name='Raw Data', line=dict(width=1)))
+    fig.add_trace(go.Scatter(x=x_c, y=y_c, mode='lines', name='Compressed Fit', line=dict(width=2)))
+    fig.add_trace(go.Scatter(x=x_c, y=y_upper, mode='lines', name='Upper Bound', line=dict(dash='dot')))
+    fig.add_trace(go.Scatter(x=x_c, y=y_lower, mode='lines', name='Lower Bound', line=dict(dash='dot')))
+
+    fig.update_layout(title=f"{scenario_name} | Compressed Plot Load: {compressed_time:.4f}s",
+                      xaxis_title="X", yaxis_title="Y")
+    fig.show()
+
+    raw_size = (len(x_raw) * 8 + len(y_raw) * 8) / 1024
+    comp_size = Path(SAVE_PATH).stat().st_size / 1024
+    print(f"Raw size: {raw_size:.2f} KB | Compressed JSON size: {comp_size:.2f} KB")
+
+    avg_deg = np.mean([c["degree"] for c in compressed_data])
+    print(f"Average polynomial degree used: {avg_deg:.2f}")
+
+
+# ---------- STEP 6: Run Scenarios ----------
+for scenario in ["normal", "noisy", "trend", "spikes", "flat"]:
+    print(f"\n--- Running {scenario} scenario ---")
+    x, y = generate_timeseries(scenario=scenario)
+    compressed = compress_timeseries_adaptive(x, y)
+    save_compressed(compressed)
+    loaded = load_compressed()
+    plot_comparison(x, y, loaded, scenario)
