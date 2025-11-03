@@ -1,0 +1,66 @@
+from difflib import get_close_matches
+from IPython.display import display, Markdown
+
+def label_remaining_systems(df, text_col='title_clean', system_col='system'):
+    """
+    Interactively label remaining NaN system entries row-by-row.
+    Suggests a likely match and allows cycling through known systems.
+    """
+    remaining = df[df[system_col].isna() | (df[system_col] == '')].copy()
+    known_systems = sorted(df[system_col].dropna().unique().tolist())
+
+    if remaining.empty:
+        print("✅ No remaining unknown system entries.")
+        return df
+
+    print(f"🧾 {len(remaining)} unknown system entries to label.\n")
+    i = 0
+
+    for idx, row in remaining.iterrows():
+        title = row[text_col] or "(no description)"
+        suggestion_list = get_close_matches(title, known_systems, n=5, cutoff=0.3)
+        suggestion_idx = 0
+        suggestion = suggestion_list[suggestion_idx] if suggestion_list else None
+
+        while True:
+            display(Markdown(f"### 🔹 Entry {i+1}/{len(remaining)}"))
+            print(f"Description: {title}")
+            if suggestion:
+                display(Markdown(f"**💭 Suggested system:** **{suggestion}**"))
+            else:
+                print("💭 No system suggestion found.")
+
+            print("\nOptions:")
+            print("  [Enter] – accept suggestion")
+            print("  [c] – cycle to next suggestion")
+            print("  [t] – type your own system name")
+            print("  [s] – skip this row")
+
+            choice = input("Choice: ").strip().lower()
+
+            if choice == '':
+                if suggestion:
+                    df.loc[idx, system_col] = suggestion
+                    print(f"✅ Assigned '{suggestion}'\n")
+                else:
+                    print("⚠️ No suggestion to accept.\n")
+                break
+            elif choice == 'c':
+                suggestion_idx = (suggestion_idx + 1) % len(suggestion_list) if suggestion_list else 0
+                suggestion = suggestion_list[suggestion_idx] if suggestion_list else None
+            elif choice == 't':
+                custom = input("Enter system label: ").strip()
+                if custom:
+                    df.loc[idx, system_col] = custom
+                    print(f"✅ Assigned '{custom}'\n")
+                break
+            elif choice == 's':
+                print("⏭ Skipped.\n")
+                break
+            else:
+                print("❓ Unknown command, try again.")
+
+        i += 1
+
+    print("🎯 Labeling complete.")
+    return df
