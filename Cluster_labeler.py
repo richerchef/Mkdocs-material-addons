@@ -1,86 +1,87 @@
+import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
-import pandas as pd
-import os
+from difflib import get_close_matches
+from IPython.display import display, Markdown
 
-def cluster_and_label_systems(
-    df,
-    text_col='title_clean',
-    system_col='system',
-    n_clusters=10,
-    progress_file='cluster_label_progress.csv'
-):
+def interactive_system_labeller(df, text_col='title_clean', system_col='system', n_clusters=20, max_features=500):
     """
-    Cluster rows with missing system values, show examples, and let the user
-    assign existing system labels interactively.
+    Cluster unknown system entries and interactively assign labels with suggestions.
 
-    - Only processes rows where system is NaN
-    - Clusters on text_col
-    - Suggests existing system labels from df
-    - Saves progress incrementally
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The dataframe with text and system columns.
+    text_col : str
+        The text column to cluster on.
+    system_col : str
+        The column to populate with system names.
+    n_clusters : int
+        Number of clusters for KMeans.
+    max_features : int
+        Max features for TF-IDF.
     """
 
-    # Work only on rows missing system
-    df_target = df[df[system_col].isna()].copy()
-    print(f"🧭 Found {len(df_target)} rows with missing system labels")
+    # Filter only rows with missing system labels
+    unknown_df = df[df[system_col].isna() | (df[system_col] == '')].copy()
 
-    # If nothing to label, stop early
-    if len(df_target) == 0:
-        print("✅ No missing system labels found.")
+    if unknown_df.empty:
+        print("✅ No unknown system entries to label.")
         return df
 
+    print(f"🧩 Clustering {len(unknown_df)} unknown entries...")
+
     # TF-IDF vectorization
-    print("🔍 Vectorizing text...")
-    tfidf = TfidfVectorizer(stop_words='english')
-    X = tfidf.fit_transform(df_target[text_col])
+    vectorizer = TfidfVectorizer(stop_words='english', max_features=max_features)
+    X = vectorizer.fit_transform(unknown_df[text_col].fillna(""))
 
-    # Dynamic cluster suggestion (optional)
-    if n_clusters == "auto":
-        n_clusters = max(2, min(20, len(df_target) // 50))
+    # Dynamic cluster count heuristic
+    n_clusters = min(n_clusters, max(2, len(unknown_df) // 5))
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    unknown_df['cluster'] = kmeans.fit_predict(X)
 
-    print(f"🌀 Clustering into {n_clusters} groups...")
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    df_target['cluster'] = kmeans.fit_predict(X)
+    # Known systems for suggestions
+    known_systems = sorted(df[system_col].dropna().unique().tolist())
 
-    # Load previous progress if any
-    if os.path.exists(progress_file):
-        progress = pd.read_csv(progress_file)
-        cluster_map = dict(zip(progress['cluster'], progress['system_label']))
-        print(f"Resuming from progress file: {progress_file}")
-    else:
-        cluster_map = {}
+    print(f"💡 Found {n_clusters} clusters to review.\n")
 
-    existing_systems = sorted(df[system_col].dropna().unique().tolist())
+    for c in sorted(unknown_df['cluster'].unique()):
+        cluster_data = unknown_df[unknown_df['cluster'] == c]
+        texts = cluster_data[text_col].dropna().tolist()
+        top_examples = "\n".join(f"- {t}" for t in texts[:10])  # first 10 examples
 
-    for cluster_id in sorted(df_target['cluster'].unique()):
-        if cluster_id in cluster_map:
-            continue  # Skip already labeled clusters
+        # Find best match suggestion
+        joined_text = " ".join(texts).lower()
+        suggestion = None
+        for s in known_systems:
+            if s.lower() in joined_text:
+                suggestion = s
+                break
+        if not suggestion:
+            # fallback: fuzzy match based on most common words
+            tokens = [t for t in joined_text.split() if len(t) > 2]
+            guess = get_close_matches(" ".join(tokens[:5]), known_systems, n=1, cutoff=0.4)
+            suggestion = guess[0] if guess else None
 
-        cluster_rows = df_target[df_target['cluster'] == cluster_id][text_col].tolist()
-        print("\n" + "="*70)
-        print(f"🧩 Cluster {cluster_id} — {len(cluster_rows)} items")
-        print("-"*70)
+        display(Markdown(f"### 🔹 Cluster {c} ({len(cluster_data)} items)\n{text_col} examples:\n{top_examples}"))
 
-        for i, row_text in enumerate(cluster_rows, 1):
-            print(f"{i:>3}. {row_text}")
-
-        print("\n💡 Existing system options:")
-        print(", ".join(existing_systems))
-        print("-"*70)
-
-        label = input("Type system name (or leave blank to skip): ").strip()
-
-        if label:
-            cluster_map[cluster_id] = label
-            df_target.loc[df_target['cluster'] == cluster_id, system_col] = label
+        if suggestion:
+            display(Markdown(f"**💭 Suggested system:** **{suggestion}**"))
         else:
-            cluster_map[cluster_id] = None
+            print("💭 No clear system suggestion found.")
 
-        # Save progress
-        pd.DataFrame({'cluster': list(cluster_map.keys()), 'system_label': list(cluster_map.values())}).to_csv(progress_file, index=False)
-        print(f"✅ Progress saved ({progress_file})")
+        # User input
+        user_label = input("Enter system label (Enter to accept suggestion, 's' to skip): ").strip()
 
-    print("\n🎯 Updating main DataFrame...")
-    df.update(df_target)
-    print("✅ System labels updated successfully.")
+        if user_label.lower() == 's':
+            continue
+        elif user_label == '' and suggestion:
+            user_label = suggestion
+
+        if user_label:
+            mask = (df.index.isin(cluster_data.index))
+            df.loc[mask, system_col] = user_label
+            print(f"✅ Updated {mask.sum()} rows with system = '{user_label}'\n")
+
+    print("🎯 Labeling complete.")
     return df
