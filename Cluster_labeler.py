@@ -1,72 +1,86 @@
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
 import pandas as pd
-from sklearn.feature_extraction.text import CountVectorizer
-import numpy as np
 import os
 
-def label_clusters_interactively(
-    df, 
-    text_col='clean', 
-    cluster_col='cluster', 
-    label_col='system', 
-    n_terms=5, 
-    n_examples=5, 
-    progress_file='cluster_labels_progress.csv'
+def cluster_and_label_systems(
+    df,
+    text_col='title_clean',
+    system_col='system',
+    n_clusters=10,
+    progress_file='cluster_label_progress.csv'
 ):
     """
-    Interactively label clusters in a DataFrame.
-    - Saves progress to progress_file after each cluster
-    - Can resume from existing progress_file
+    Cluster rows with missing system values, show examples, and let the user
+    assign existing system labels interactively.
+
+    - Only processes rows where system is NaN
+    - Clusters on text_col
+    - Suggests existing system labels from df
+    - Saves progress incrementally
     """
-    # Load existing progress if available
+
+    # Work only on rows missing system
+    df_target = df[df[system_col].isna()].copy()
+    print(f"🧭 Found {len(df_target)} rows with missing system labels")
+
+    # If nothing to label, stop early
+    if len(df_target) == 0:
+        print("✅ No missing system labels found.")
+        return df
+
+    # TF-IDF vectorization
+    print("🔍 Vectorizing text...")
+    tfidf = TfidfVectorizer(stop_words='english')
+    X = tfidf.fit_transform(df_target[text_col])
+
+    # Dynamic cluster suggestion (optional)
+    if n_clusters == "auto":
+        n_clusters = max(2, min(20, len(df_target) // 50))
+
+    print(f"🌀 Clustering into {n_clusters} groups...")
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    df_target['cluster'] = kmeans.fit_predict(X)
+
+    # Load previous progress if any
     if os.path.exists(progress_file):
-        labels = pd.read_csv(progress_file, index_col=0)['label'].to_dict()
-        print(f"Resuming from existing progress file: {progress_file}")
+        progress = pd.read_csv(progress_file)
+        cluster_map = dict(zip(progress['cluster'], progress['system_label']))
+        print(f"Resuming from progress file: {progress_file}")
     else:
-        labels = {}
+        cluster_map = {}
 
-    vectorizer = CountVectorizer(stop_words='english')
-    X = vectorizer.fit_transform(df[text_col])
-    terms = np.array(vectorizer.get_feature_names_out())
+    existing_systems = sorted(df[system_col].dropna().unique().tolist())
 
-    for cluster_id in sorted(df[cluster_col].unique()):
-        # Skip already-labeled clusters
-        if cluster_id in labels and pd.notna(labels[cluster_id]):
-            continue
+    for cluster_id in sorted(df_target['cluster'].unique()):
+        if cluster_id in cluster_map:
+            continue  # Skip already labeled clusters
 
-        cluster_docs = X[df[cluster_col] == cluster_id]
-        cluster_mean = np.asarray(cluster_docs.mean(axis=0)).ravel()
-        top_indices = cluster_mean.argsort()[::-1][:n_terms]
-        top_words = terms[top_indices]
+        cluster_rows = df_target[df_target['cluster'] == cluster_id][text_col].tolist()
+        print("\n" + "="*70)
+        print(f"🧩 Cluster {cluster_id} — {len(cluster_rows)} items")
+        print("-"*70)
 
-        print(f"\n=== Cluster {cluster_id} ===")
-        print(f"Top {n_terms} words: {', '.join(top_words)}\n")
+        for i, row_text in enumerate(cluster_rows, 1):
+            print(f"{i:>3}. {row_text}")
 
-        # Show example rows
-        examples = df.loc[df[cluster_col] == cluster_id, text_col].head(n_examples).tolist()
-        for i, ex in enumerate(examples, 1):
-            print(f"{i}. {ex}")
+        print("\n💡 Existing system options:")
+        print(", ".join(existing_systems))
+        print("-"*70)
 
-        # Prompt user for label
-        label = input("\nEnter system label (or leave blank to skip / press 'e' to edit previous): ").strip()
-
-        if label.lower() == 'e':
-            # Show previous label if any
-            prev_label = labels.get(cluster_id, None)
-            print(f"Previous label: {prev_label}")
-            label = input("Enter new label (or leave blank to keep previous): ").strip()
-            if not label:
-                label = prev_label
+        label = input("Type system name (or leave blank to skip): ").strip()
 
         if label:
-            labels[cluster_id] = label
+            cluster_map[cluster_id] = label
+            df_target.loc[df_target['cluster'] == cluster_id, system_col] = label
         else:
-            labels[cluster_id] = None
+            cluster_map[cluster_id] = None
 
-        # Save progress after each cluster
-        pd.Series(labels, name='label').to_csv(progress_file)
-        print(f"Progress saved to {progress_file}")
+        # Save progress
+        pd.DataFrame({'cluster': list(cluster_map.keys()), 'system_label': list(cluster_map.values())}).to_csv(progress_file, index=False)
+        print(f"✅ Progress saved ({progress_file})")
 
-    # Apply labels to dataframe
-    df[label_col] = df[cluster_col].map(labels)
-    print("\n✅ Labeling complete.")
-    return df, labels
+    print("\n🎯 Updating main DataFrame...")
+    df.update(df_target)
+    print("✅ System labels updated successfully.")
+    return df
