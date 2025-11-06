@@ -42,28 +42,13 @@ const data = [
   { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
 ];
 
-// --- AG Grid setup ---
-const gridOptions = {
-  columnDefs:[
-    { field:"system", filter:"agTextColumnFilter" },
-    { field:"subsystem", filter:"agTextColumnFilter" },
-    { field:"item", filter:"agTextColumnFilter" },
-    { field:"duration", filter:"agNumberColumnFilter" },
-    { field:"complete", filter:true, cellRenderer:p=>p.value?"✅":"❌" }
-  ],
-  defaultColDef:{ filter:true, sortable:true, resizable:true },
-  rowData: data
-};
-
-// Initialize AG Grid and keep reference
-const gridDiv = document.querySelector("#grid");
-const grid = agGrid.createGrid(gridDiv, gridOptions);
-
-// --- Helper: get filtered data from AG Grid ---
-function getFilteredData() {
+// --- Helper: get filtered data ---
+function getFilteredData(gridOptions) {
   const filtered = [];
-  grid.api.forEachNodeAfterFilter(n => filtered.push(n.data));
-  return filtered;
+  if(gridOptions.api) {
+    gridOptions.api.forEachNodeAfterFilter(n => filtered.push(n.data));
+  }
+  return filtered.length ? filtered : data;
 }
 
 // --- Summary ---
@@ -116,21 +101,35 @@ function drawTreemap(filteredData, colorMode="complete") {
   document.getElementById("chart").on("plotly_click", e=>{
     const label = e.points[0].label;
     const filtered = data.filter(d=>d.system===label || d.subsystem===label || d.item===label);
-    grid.api.setRowData(filtered.length?filtered:data);
+    gridOptions.api.setRowData(filtered.length?filtered:data);
     updateSummary(filtered.length?filtered:data);
   });
 }
 
-// --- Update treemap when table filters ---
-grid.api.addEventListener('filterChanged', ()=>{
-  const filtered = getFilteredData();
-  drawTreemap(filtered, document.getElementById("colorMode").value);
-});
+// --- AG Grid ---
+const gridOptions = {
+  columnDefs:[
+    { field:"system", filter:"agTextColumnFilter" },
+    { field:"subsystem", filter:"agTextColumnFilter" },
+    { field:"item", filter:"agTextColumnFilter" },
+    { field:"duration", filter:"agNumberColumnFilter" },
+    { field:"complete", filter:true, cellRenderer:p=>p.value?"✅":"❌" }
+  ],
+  defaultColDef:{ filter:true, sortable:true, resizable:true },
+  rowData:data,
+  onFilterChanged: function() {
+    const filtered = getFilteredData(gridOptions);
+    drawTreemap(filtered, document.getElementById("colorMode").value);
+  }
+};
+
+const gridDiv = document.querySelector("#grid");
+const grid = agGrid.createGrid(gridDiv, gridOptions);
 
 // --- Dropdown for colour mode ---
 document.getElementById("colorMode").addEventListener("change", e=>{
   const mode = e.target.value;
-  drawTreemap(getFilteredData(), mode);
+  drawTreemap(getFilteredData(gridOptions), mode);
 });
 
 // --- Initial render ---
