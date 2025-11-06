@@ -39,6 +39,8 @@ body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 
         <th>Item</th>
         <th>Duration</th>
         <th>Complete</th>
+        <th>Priority</th>
+        <th>Location</th>
       </tr>
       <tr id="filterRow">
         <th><input type="text" placeholder="Filter System"></th>
@@ -46,6 +48,8 @@ body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 
         <th><input type="text" placeholder="Filter Item"></th>
         <th><input type="text" placeholder="Filter Duration"></th>
         <th><input type="text" placeholder="Filter Complete"></th>
+        <th><input type="text" placeholder="Filter Priority"></th>
+        <th><input type="text" placeholder="Filter Location"></th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -53,16 +57,15 @@ body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 
 </div>
 
 <script>
+// Example data - replace with your Python JSON export
 const data = [
-  { system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true },
-  { system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false },
-  { system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true },
-  { system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false },
-  { system: "Turbine", subsystem: "Casing", item: "Casing A", duration: 6, complete: true },
-  { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
+  { Universal_Identifier:"UID001", system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true, priority:"High", location:"Zone 1" },
+  { Universal_Identifier:"UID002", system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false, priority:"Medium", location:"Zone 2" },
+  { Universal_Identifier:"UID003", system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true, priority:"Low", location:"Zone 1" },
+  { Universal_Identifier:"UID004", system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false, priority:"High", location:"Zone 3" }
 ];
 
-// --- Initialize DataTable ---
+// Initialize DataTable
 const table = $('#maintenanceTable').DataTable({
   data: data,
   columns:[
@@ -70,13 +73,15 @@ const table = $('#maintenanceTable').DataTable({
     { data:"subsystem" },
     { data:"item" },
     { data:"duration" },
-    { data:"complete", render: d=>d ? "✅" : "❌" }
+    { data:"complete", render: d=>d ? "Yes" : "No" },
+    { data:"priority" },
+    { data:"location" }
   ],
   orderCellsTop:true,
   fixedHeader:true
 });
 
-// --- Apply column filters ---
+// Column filters
 $('#maintenanceTable thead tr#filterRow th').each(function(i){
   $('input', this).on('keyup change', function(){
     if(table.column(i).search() !== this.value){
@@ -86,7 +91,7 @@ $('#maintenanceTable thead tr#filterRow th').each(function(i){
   });
 });
 
-// --- Summary ---
+// Summary counts
 function updateSummary(currentData){
   const completeItems = currentData.filter(d=>d.complete);
   const outstandingItems = currentData.filter(d=>!d.complete);
@@ -97,64 +102,83 @@ function updateSummary(currentData){
   $('#summary').text(summary);
 }
 
-// --- Build Treemap ---
+// Draw treemap
 function drawTreemap(filteredData, colorMode="complete"){
   updateSummary(filteredData);
 
-  const labels=[], parents=[], values=[], colors=[];
+  const labels=[], parents=[], values=[], colors=[], hovertexts=[];
   const systems = [...new Set(filteredData.map(d=>d.system))];
 
   systems.forEach(sys=>{
     const sysItems = filteredData.filter(d=>d.system===sys);
-    labels.push(sys); parents.push(""); values.push(sysItems.reduce((sum,d)=>sum+d.duration,0)); colors.push("#ccc");
+    labels.push(sys); parents.push(""); values.push(sysItems.reduce((sum,d)=>sum+d.duration,0)); colors.push("#ccc"); hovertexts.push("");
 
     const subsystems = [...new Set(sysItems.map(d=>d.subsystem))];
     subsystems.forEach(sub=>{
       const subItems = sysItems.filter(d=>d.subsystem===sub);
-      labels.push(sub); parents.push(sys); values.push(subItems.reduce((sum,d)=>sum+d.duration,0)); colors.push("#aaa");
+      labels.push(sub); parents.push(sys); values.push(subItems.reduce((sum,d)=>sum+d.duration,0)); colors.push("#aaa"); hovertexts.push("");
 
       subItems.forEach(item=>{
-        labels.push(item.item); parents.push(sub); values.push(item.duration);
-        if(colorMode==="complete") colors.push(item.complete?"mediumseagreen":"lightcoral");
-        else{
-          const min=Math.min(...filteredData.map(d=>d.duration));
-          const max=Math.max(...filteredData.map(d=>d.duration));
-          const ratio=(item.duration-min)/(max-min||1);
-          colors.push(`rgb(0,${255-Math.round(255*ratio)},255)`);
+        labels.push(item.Universal_Identifier);  // Use unique ID for Plotly labels
+        parents.push(sub);
+        values.push(item.duration);
+
+        if(colorMode==="complete") colors.push(item.complete ? "mediumseagreen" : "lightcoral");
+        else {
+          const min = Math.min(...filteredData.map(d=>d.duration));
+          const max = Math.max(...filteredData.map(d=>d.duration));
+          const ratio = (item.duration - min)/(max-min||1);
+          const r = Math.round(255*ratio);
+          const g = Math.round(255*(1-ratio));
+          colors.push(`rgb(${r},${g},0)`);
         }
+
+        hovertexts.push(`
+          <b>${item.item}</b><br>
+          System: ${item.system}<br>
+          Subsystem: ${item.subsystem}<br>
+          Duration: ${item.duration} days<br>
+          Complete: ${item.complete ? "Yes":"No"}<br>
+          Priority: ${item.priority || ""}<br>
+          Location: ${item.location || ""}
+        `);
       });
     });
   });
 
   Plotly.newPlot("chart",[{
-    type:"treemap", labels, parents, values,
-    marker:{colors}, branchvalues:"total",
-    hovertemplate:"<b>%{label}</b><br>Duration: %{value}<extra></extra>"
+    type:"treemap",
+    labels: labels,
+    parents: parents,
+    values: values,
+    marker:{colors},
+    branchvalues:"total",
+    hoverinfo:"text",
+    hovertext:hovertexts
   }]);
 
-  // Click treemap node to filter table
+  // Click treemap to filter table
   document.getElementById("chart").on("plotly_click", e=>{
     const label = e.points[0].label;
-    const filtered = data.filter(d=>d.system===label || d.subsystem===label || d.item===label);
+    const filtered = data.filter(d=>d.Universal_Identifier===label || d.system===label || d.subsystem===label);
     table.clear().rows.add(filtered.length ? filtered : data).draw();
     updateSummary(filtered.length ? filtered : data);
-    // Reset column filters
-    $('#maintenanceTable thead tr#filterRow input').val('');
+    $('#maintenanceTable thead tr#filterRow input').val('');  // reset filters
   });
 }
 
-// --- Update treemap from table filter ---
+// Update treemap from table filtering
 function updateTreemapFromTable(){
   const filteredData = table.rows({filter:'applied'}).data().toArray();
   drawTreemap(filteredData, $('#colorMode').val());
 }
 
-// --- Dropdown for colour ---
+// Colour mode dropdown
 $('#colorMode').on('change', function(){
   updateTreemapFromTable();
 });
 
-// --- Initial render ---
+// Initial render
 drawTreemap(data);
 </script>
 
