@@ -43,7 +43,7 @@
   <div id="grid" class="ag-theme-alpine"></div>
 
   <script>
-    // Sample data
+    // --- Sample Data ---
     const data = [
       { system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true },
       { system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false },
@@ -53,25 +53,10 @@
       { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
     ];
 
-    // D3 Hierarchy
-    function getHierarchy(filteredData = data) {
-      return d3.stratify()
-        .id(d => `${d.system}-${d.subsystem}-${d.item}`)
-        .parentId(d => {
-          if (d.item) return `${d.system}-${d.subsystem}`;
-          if (d.subsystem) return d.system;
-          return "";
-        })([
-          ...d3.groups(filteredData, d => d.system).map(([system]) => ({ system, id: system })),
-          ...d3.groups(filteredData, d => [d.system, d.subsystem]).map(([system, subsystem]) => ({ system, subsystem, id: `${system}-${subsystem}`, parentId: system })),
-          ...filteredData.map(d => ({ ...d, id: `${d.system}-${d.subsystem}-${d.item}`, parentId: `${d.system}-${d.subsystem}` }))
-        ]);
-    }
-
+    // --- Treemap setup ---
     const svg = d3.select("svg");
     const width = svg.node().clientWidth;
     const height = svg.node().clientHeight;
-    const color = d3.scaleOrdinal(d3.schemeCategory10);
 
     function updateSummary(filteredData) {
       const completeCount = filteredData.filter(d => d.complete).length;
@@ -99,13 +84,13 @@
         .attr("height", d => d.y1 - d.y0)
         .attr("fill", d => d.data.complete ? "#6cc070" : "#e57373")
         .attr("stroke", "#fff")
+        .style("cursor", "pointer")
         .on("click", (event, d) => {
           const path = [d.data.system, d.data.subsystem].filter(Boolean);
           const filtered = data.filter(x =>
             path.every(p => Object.values(x).includes(p))
           );
-          gridOptions.api.setRowData(filtered);
-          updateSummary(filtered);
+          grid.setGridOption("rowData", filtered);
           drawTreemap(filtered);
         });
 
@@ -117,27 +102,31 @@
         .style("pointer-events", "none");
     }
 
-    // AG Grid setup
-    const columnDefs = [
-      { field: "system", filter: "agTextColumnFilter" },
-      { field: "subsystem", filter: "agTextColumnFilter" },
-      { field: "item", filter: "agTextColumnFilter" },
-      { field: "duration", filter: "agNumberColumnFilter" },
-      { field: "complete", filter: true, cellRenderer: p => p.value ? "✅" : "❌" }
-    ];
-
+    // --- AG Grid setup ---
     const gridOptions = {
-      columnDefs,
+      columnDefs: [
+        { field: "system", filter: "agTextColumnFilter" },
+        { field: "subsystem", filter: "agTextColumnFilter" },
+        { field: "item", filter: "agTextColumnFilter" },
+        { field: "duration", filter: "agNumberColumnFilter" },
+        { field: "complete", filter: true, cellRenderer: p => p.value ? "✅" : "❌" }
+      ],
       rowData: data,
-      defaultColDef: { filter: true, sortable: true, resizable: true },
+      defaultColDef: {
+        filter: true,
+        sortable: true,
+        resizable: true
+      },
       onFilterChanged: () => {
         const filtered = [];
-        gridOptions.api.forEachNodeAfterFilter(node => filtered.push(node.data));
+        grid.api.forEachNodeAfterFilter(node => filtered.push(node.data));
         drawTreemap(filtered);
       }
     };
 
-    new agGrid.Grid(document.getElementById("grid"), gridOptions);
+    // ✅ Correct AG Grid initialization
+    const gridDiv = document.querySelector("#grid");
+    const grid = agGrid.createGrid(gridDiv, gridOptions);
 
     drawTreemap();
   </script>
