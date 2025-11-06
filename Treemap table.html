@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Maintenance Treemap Dashboard</title>
+  <title>Maintenance Dashboard</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.noStyle.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" />
@@ -46,142 +46,135 @@
 </head>
 <body>
 
-  <div id="controls">
-    <div>
-      <label>Colour by: </label>
-      <select id="colorMode">
-        <option value="complete">Completion Status</option>
-        <option value="duration">Duration</option>
-      </select>
-    </div>
-    <div class="summary" id="summary"></div>
+<div id="controls">
+  <div>
+    <label>Colour by: </label>
+    <select id="colorMode">
+      <option value="complete">Completion Status</option>
+      <option value="duration">Duration</option>
+    </select>
   </div>
+  <div class="summary" id="summary"></div>
+</div>
 
-  <div id="chart"></div>
-  <div id="grid" class="ag-theme-alpine"></div>
+<div id="chart"></div>
+<div id="grid" class="ag-theme-alpine"></div>
 
-  <script>
-    const data = [
-      { system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true },
-      { system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false },
-      { system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true },
-      { system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false },
-      { system: "Turbine", subsystem: "Casing", item: "Casing A", duration: 6, complete: true },
-      { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
-    ];
+<script>
+  const data = [
+    { system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true },
+    { system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false },
+    { system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true },
+    { system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false },
+    { system: "Turbine", subsystem: "Casing", item: "Casing A", duration: 6, complete: true },
+    { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
+  ];
 
-    // --- Summary updater ---
-    function updateSummary(currentData) {
-      const completeCount = currentData.filter(d => d.complete).length;
-      const outstanding = currentData.length - completeCount;
-      document.getElementById("summary").textContent =
-        `Complete: ${completeCount} | Outstanding: ${outstanding}`;
-    }
+  // --- Summary updater ---
+  function updateSummary(currentData) {
+    const completeCount = currentData.filter(d => d.complete).length;
+    const outstanding = currentData.length - completeCount;
+    document.getElementById("summary").textContent =
+      `Complete: ${completeCount} | Outstanding: ${outstanding}`;
+  }
 
-    // --- Treemap builder ---
-    function drawTreemap(filteredData, colorMode = "complete") {
-      updateSummary(filteredData);
+  // --- Treemap builder ---
+  function drawTreemap(filteredData, colorMode = "complete") {
+    updateSummary(filteredData);
 
-      // Build hierarchy arrays
-      const labels = [], parents = [], values = [], colors = [];
+    const labels = [];
+    const parents = [];
+    const values = [];
+    const colors = [];
 
-      // Get duration scale if needed
-      const durMin = Math.min(...filteredData.map(d => d.duration));
-      const durMax = Math.max(...filteredData.map(d => d.duration));
-      const durScale = d3.scaleLinear().domain([durMin, durMax]).range(["#fee5d9", "#a50f15"]);
+    const systems = [...new Set(filteredData.map(d => d.system))];
+    systems.forEach(sys => {
+      const sysItems = filteredData.filter(d => d.system === sys);
+      labels.push(sys);
+      parents.push("");
+      values.push(sysItems.reduce((sum,d)=>sum+d.duration,0));
+      colors.push("#ccc");
 
-      const colorFn = d => {
-        if (colorMode === "duration") return durScale(d.duration);
-        return d.complete ? "mediumseagreen" : "lightcoral";
-      };
+      const subsystems = [...new Set(sysItems.map(d => d.subsystem))];
+      subsystems.forEach(sub => {
+        const subItems = sysItems.filter(d => d.subsystem === sub);
+        labels.push(sub);
+        parents.push(sys);
+        values.push(subItems.reduce((sum,d)=>sum+d.duration,0));
+        colors.push("#aaa");
 
-      const systems = [...new Set(filteredData.map(d => d.system))];
-      systems.forEach(sys => {
-        const sysItems = filteredData.filter(d => d.system === sys);
-        labels.push(sys);
-        parents.push("");
-        values.push(sysItems.reduce((sum, d) => sum + d.duration, 0));
-        colors.push("#ccc");
+        subItems.forEach(item => {
+          labels.push(item.item);
+          parents.push(sub);
+          values.push(item.duration);
 
-        const subsystems = [...new Set(sysItems.map(d => d.subsystem))];
-        subsystems.forEach(sub => {
-          const subItems = sysItems.filter(d => d.subsystem === sub);
-          labels.push(sub);
-          parents.push(sys);
-          values.push(subItems.reduce((sum, d) => sum + d.duration, 0));
-          colors.push("#aaa");
-
-          subItems.forEach(item => {
-            labels.push(item.item);
-            parents.push(sub);
-            values.push(item.duration);
-            colors.push(colorFn(item));
-          });
+          if(colorMode==="complete"){
+            colors.push(item.complete ? "mediumseagreen":"lightcoral");
+          } else {
+            // gradient from lightyellow to red
+            const min = Math.min(...filteredData.map(d=>d.duration));
+            const max = Math.max(...filteredData.map(d=>d.duration));
+            const ratio = (item.duration-min)/(max-min||1);
+            colors.push(`rgb(${255},${255-Math.round(255*ratio)},0)`); // yellow->red
+          }
         });
       });
-
-      const trace = {
-        type: "treemap",
-        labels,
-        parents,
-        values,
-        marker: { colors },
-        branchvalues: "total",
-        hovertemplate: "<b>%{label}</b><br>Duration: %{value}<extra></extra>"
-      };
-
-      const layout = { margin: { t: 10, l: 0, r: 0, b: 0 } };
-      Plotly.newPlot("chart", [trace], layout);
-
-      // --- Treemap click handler ---
-      document.getElementById("chart").on("plotly_click", e => {
-        const label = e.points[0].label;
-        const filtered = data.filter(d =>
-          d.system === label || d.subsystem === label || d.item === label
-        );
-        grid.setGridOption("rowData", filtered.length ? filtered : data);
-        updateSummary(filtered.length ? filtered : data);
-      });
-    }
-
-    // --- AG Grid setup ---
-    const gridOptions = {
-      columnDefs: [
-        { field: "system", filter: "agTextColumnFilter" },
-        { field: "subsystem", filter: "agTextColumnFilter" },
-        { field: "item", filter: "agTextColumnFilter" },
-        { field: "duration", filter: "agNumberColumnFilter" },
-        { field: "complete", filter: true, cellRenderer: p => p.value ? "✅" : "❌" }
-      ],
-      rowData: data,
-      defaultColDef: {
-        filter: true,
-        sortable: true,
-        resizable: true
-      },
-      onFilterChanged: () => {
-        const filtered = [];
-        grid.api.forEachNodeAfterFilter(n => filtered.push(n.data));
-        drawTreemap(filtered, document.getElementById("colorMode").value);
-      }
-    };
-
-    const gridDiv = document.querySelector("#grid");
-    const grid = agGrid.createGrid(gridDiv, gridOptions);
-
-    // --- Colour mode dropdown ---
-    document.getElementById("colorMode").addEventListener("change", e => {
-      const mode = e.target.value;
-      const filtered = [];
-      grid.api.forEachNodeAfterFilter(n => filtered.push(n.data));
-      drawTreemap(filtered, mode);
     });
 
-    // --- Initial render ---
-    drawTreemap(data);
-  </script>
+    const trace = {
+      type: "treemap",
+      labels, parents, values,
+      marker: { colors },
+      branchvalues: "total",
+      hovertemplate: "<b>%{label}</b><br>Duration: %{value}<extra></extra>"
+    };
 
-  <!-- d3 for gradient scale -->
-  <script src="https://d3js.org/d3.v7.min.js"></script>
+    Plotly.newPlot("chart",[trace],{margin:{t:10,l:0,r:0,b:0}});
+
+    // --- Treemap click filters table ---
+    document.getElementById("chart").on("plotly_click", e => {
+      const label = e.points[0].label;
+      const filtered = data.filter(d => d.system===label || d.subsystem===label || d.item===label);
+      grid.setGridOption("rowData", filtered.length?filtered:data);
+      updateSummary(filtered.length?filtered:data);
+    });
+  }
+
+  // --- AG Grid setup ---
+  const gridOptions = {
+    columnDefs:[
+      { field:"system", filter:"agTextColumnFilter" },
+      { field:"subsystem", filter:"agTextColumnFilter" },
+      { field:"item", filter:"agTextColumnFilter" },
+      { field:"duration", filter:"agNumberColumnFilter" },
+      { field:"complete", filter:true, cellRenderer: p=>p.value?"✅":"❌" }
+    ],
+    rowData:data,
+    defaultColDef:{
+      filter:true,
+      sortable:true,
+      resizable:true
+    },
+    onFilterChanged: () => {
+      const filtered=[];
+      grid.api.forEachNodeAfterFilter(n=>filtered.push(n.data));
+      drawTreemap(filtered, document.getElementById("colorMode").value);
+    }
+  };
+
+  const gridDiv = document.querySelector("#grid");
+  const grid = agGrid.createGrid(gridDiv, gridOptions);
+
+  // --- Dropdown for colour mode ---
+  document.getElementById("colorMode").addEventListener("change", e=>{
+    const mode = e.target.value;
+    const filtered=[];
+    grid.api.forEachNodeAfterFilter(n=>filtered.push(n.data));
+    drawTreemap(filtered, mode);
+  });
+
+  // --- Initial render ---
+  drawTreemap(data);
+</script>
 </body>
 </html>
