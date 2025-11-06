@@ -1,47 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <title>Maintenance Dashboard</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.noStyle.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" />
   <style>
-    body {
-      font-family: sans-serif;
-      margin: 0;
-      display: grid;
-      grid-template-rows: auto 60% 40%;
-      height: 100vh;
-      background: #f5f5f5;
-    }
-    #controls {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px;
-      background: white;
-      border-bottom: 1px solid #ddd;
-    }
-    #chart {
-      width: 100%;
-      height: 100%;
-      background: white;
-    }
-    #grid {
-      height: 100%;
-      background: white;
-    }
-    select {
-      padding: 4px 6px;
-      border-radius: 4px;
-      border: 1px solid #aaa;
-      font-size: 14px;
-    }
-    .summary {
-      font-weight: 600;
-    }
+    body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 60% 40%; height:100vh; background:#f5f5f5; }
+    #controls { display:flex; justify-content:space-between; align-items:center; padding:10px; background:white; border-bottom:1px solid #ddd; }
+    #chart { width:100%; height:100%; background:white; }
+    #grid { height:100%; background:white; }
+    select { padding:4px 6px; border-radius:4px; border:1px solid #aaa; font-size:14px; }
+    .summary { font-weight:600; }
   </style>
 </head>
 <body>
@@ -61,120 +33,109 @@
 <div id="grid" class="ag-theme-alpine"></div>
 
 <script>
-  const data = [
-    { system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true },
-    { system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false },
-    { system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true },
-    { system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false },
-    { system: "Turbine", subsystem: "Casing", item: "Casing A", duration: 6, complete: true },
-    { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
-  ];
+const data = [
+  { system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true },
+  { system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false },
+  { system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true },
+  { system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false },
+  { system: "Turbine", subsystem: "Casing", item: "Casing A", duration: 6, complete: true },
+  { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
+];
 
-  // --- Summary updater ---
-  function updateSummary(currentData) {
-    const completeCount = currentData.filter(d => d.complete).length;
-    const outstanding = currentData.length - completeCount;
-    document.getElementById("summary").textContent =
-      `Complete: ${completeCount} | Outstanding: ${outstanding}`;
-  }
+// --- AG Grid setup ---
+const gridOptions = {
+  columnDefs:[
+    { field:"system", filter:"agTextColumnFilter" },
+    { field:"subsystem", filter:"agTextColumnFilter" },
+    { field:"item", filter:"agTextColumnFilter" },
+    { field:"duration", filter:"agNumberColumnFilter" },
+    { field:"complete", filter:true, cellRenderer:p=>p.value?"✅":"❌" }
+  ],
+  defaultColDef:{ filter:true, sortable:true, resizable:true },
+  rowData: data
+};
 
-  // --- Treemap builder ---
-  function drawTreemap(filteredData, colorMode = "complete") {
-    updateSummary(filteredData);
+// Initialize AG Grid and keep reference
+const gridDiv = document.querySelector("#grid");
+const grid = agGrid.createGrid(gridDiv, gridOptions);
 
-    const labels = [];
-    const parents = [];
-    const values = [];
-    const colors = [];
+// --- Helper: get filtered data from AG Grid ---
+function getFilteredData() {
+  const filtered = [];
+  grid.api.forEachNodeAfterFilter(n => filtered.push(n.data));
+  return filtered;
+}
 
-    const systems = [...new Set(filteredData.map(d => d.system))];
-    systems.forEach(sys => {
-      const sysItems = filteredData.filter(d => d.system === sys);
-      labels.push(sys);
-      parents.push("");
-      values.push(sysItems.reduce((sum,d)=>sum+d.duration,0));
-      colors.push("#ccc");
+// --- Summary ---
+function updateSummary(currentData) {
+  const completeItems = currentData.filter(d=>d.complete);
+  const outstandingItems = currentData.filter(d=>!d.complete);
+  const summary = `
+    Complete: ${completeItems.length} tasks (${completeItems.reduce((a,d)=>a+d.duration,0)} days) |
+    Outstanding: ${outstandingItems.length} tasks (${outstandingItems.reduce((a,d)=>a+d.duration,0)} days)
+  `;
+  document.getElementById("summary").textContent = summary;
+}
 
-      const subsystems = [...new Set(sysItems.map(d => d.subsystem))];
-      subsystems.forEach(sub => {
-        const subItems = sysItems.filter(d => d.subsystem === sub);
-        labels.push(sub);
-        parents.push(sys);
-        values.push(subItems.reduce((sum,d)=>sum+d.duration,0));
-        colors.push("#aaa");
+// --- Treemap ---
+function drawTreemap(filteredData, colorMode="complete") {
+  updateSummary(filteredData);
 
-        subItems.forEach(item => {
-          labels.push(item.item);
-          parents.push(sub);
-          values.push(item.duration);
+  const labels=[], parents=[], values=[], colors=[];
+  const systems=[...new Set(filteredData.map(d=>d.system))];
 
-          if(colorMode==="complete"){
-            colors.push(item.complete ? "mediumseagreen":"lightcoral");
-          } else {
-            // gradient from lightyellow to red
-            const min = Math.min(...filteredData.map(d=>d.duration));
-            const max = Math.max(...filteredData.map(d=>d.duration));
-            const ratio = (item.duration-min)/(max-min||1);
-            colors.push(`rgb(${255},${255-Math.round(255*ratio)},0)`); // yellow->red
-          }
-        });
+  systems.forEach(sys=>{
+    const sysItems=filteredData.filter(d=>d.system===sys);
+    labels.push(sys); parents.push(""); values.push(sysItems.reduce((sum,d)=>sum+d.duration,0)); colors.push("#ccc");
+
+    const subsystems=[...new Set(sysItems.map(d=>d.subsystem))];
+    subsystems.forEach(sub=>{
+      const subItems=sysItems.filter(d=>d.subsystem===sub);
+      labels.push(sub); parents.push(sys); values.push(subItems.reduce((sum,d)=>sum+d.duration,0)); colors.push("#aaa");
+
+      subItems.forEach(item=>{
+        labels.push(item.item); parents.push(sub); values.push(item.duration);
+        if(colorMode==="complete") colors.push(item.complete?"mediumseagreen":"lightcoral");
+        else{
+          const min=Math.min(...filteredData.map(d=>d.duration));
+          const max=Math.max(...filteredData.map(d=>d.duration));
+          const ratio=(item.duration-min)/(max-min||1);
+          colors.push(`rgb(255,${255-Math.round(255*ratio)},0)`);
+        }
       });
     });
-
-    const trace = {
-      type: "treemap",
-      labels, parents, values,
-      marker: { colors },
-      branchvalues: "total",
-      hovertemplate: "<b>%{label}</b><br>Duration: %{value}<extra></extra>"
-    };
-
-    Plotly.newPlot("chart",[trace],{margin:{t:10,l:0,r:0,b:0}});
-
-    // --- Treemap click filters table ---
-    document.getElementById("chart").on("plotly_click", e => {
-      const label = e.points[0].label;
-      const filtered = data.filter(d => d.system===label || d.subsystem===label || d.item===label);
-      grid.setGridOption("rowData", filtered.length?filtered:data);
-      updateSummary(filtered.length?filtered:data);
-    });
-  }
-
-  // --- AG Grid setup ---
-  const gridOptions = {
-    columnDefs:[
-      { field:"system", filter:"agTextColumnFilter" },
-      { field:"subsystem", filter:"agTextColumnFilter" },
-      { field:"item", filter:"agTextColumnFilter" },
-      { field:"duration", filter:"agNumberColumnFilter" },
-      { field:"complete", filter:true, cellRenderer: p=>p.value?"✅":"❌" }
-    ],
-    rowData:data,
-    defaultColDef:{
-      filter:true,
-      sortable:true,
-      resizable:true
-    },
-    onFilterChanged: () => {
-      const filtered=[];
-      grid.api.forEachNodeAfterFilter(n=>filtered.push(n.data));
-      drawTreemap(filtered, document.getElementById("colorMode").value);
-    }
-  };
-
-  const gridDiv = document.querySelector("#grid");
-  const grid = agGrid.createGrid(gridDiv, gridOptions);
-
-  // --- Dropdown for colour mode ---
-  document.getElementById("colorMode").addEventListener("change", e=>{
-    const mode = e.target.value;
-    const filtered=[];
-    grid.api.forEachNodeAfterFilter(n=>filtered.push(n.data));
-    drawTreemap(filtered, mode);
   });
 
-  // --- Initial render ---
-  drawTreemap(data);
+  Plotly.newPlot("chart",[{
+    type:"treemap", labels, parents, values,
+    marker:{colors}, branchvalues:"total",
+    hovertemplate:"<b>%{label}</b><br>Duration: %{value}<extra></extra>"
+  }],{margin:{t:10,l:0,r:0,b:0}});
+
+  // Click treemap to filter table
+  document.getElementById("chart").on("plotly_click", e=>{
+    const label = e.points[0].label;
+    const filtered = data.filter(d=>d.system===label || d.subsystem===label || d.item===label);
+    grid.api.setRowData(filtered.length?filtered:data);
+    updateSummary(filtered.length?filtered:data);
+  });
+}
+
+// --- Update treemap when table filters ---
+grid.api.addEventListener('filterChanged', ()=>{
+  const filtered = getFilteredData();
+  drawTreemap(filtered, document.getElementById("colorMode").value);
+});
+
+// --- Dropdown for colour mode ---
+document.getElementById("colorMode").addEventListener("change", e=>{
+  const mode = e.target.value;
+  drawTreemap(getFilteredData(), mode);
+});
+
+// --- Initial render ---
+drawTreemap(data);
+
 </script>
 </body>
 </html>
