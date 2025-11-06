@@ -13,7 +13,7 @@ body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 
 #chart { width:100%; height:100%; background:white; }
 #table-container { padding:10px; background:white; overflow:auto; }
 .summary { font-weight:600; }
-.dataTables_filter { display:none; } /* hide global search, we will use column filters */
+#legend span { display:inline-block; padding:2px 8px; margin-right:5px; color:white; border-radius:3px; }
 </style>
 </head>
 <body>
@@ -29,7 +29,11 @@ body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 
   <div class="summary" id="summary"></div>
 </div>
 
+<!-- Legend for completion statuses -->
+<div id="legend" style="padding:5px;"></div>
+
 <div id="chart"></div>
+
 <div id="table-container">
   <table id="maintenanceTable" class="display" style="width:100%">
     <thead>
@@ -43,13 +47,13 @@ body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 
         <th>Location</th>
       </tr>
       <tr id="filterRow">
-        <th><input type="text" placeholder="Filter System"></th>
-        <th><input type="text" placeholder="Filter Subsystem"></th>
-        <th><input type="text" placeholder="Filter Item"></th>
-        <th><input type="text" placeholder="Filter Duration"></th>
-        <th><input type="text" placeholder="Filter Complete"></th>
-        <th><input type="text" placeholder="Filter Priority"></th>
-        <th><input type="text" placeholder="Filter Location"></th>
+        <th></th>
+        <th></th>
+        <th></th>
+        <th></th>
+        <th></th>
+        <th></th>
+        <th></th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -57,13 +61,31 @@ body { font-family: sans-serif; margin:0; display:grid; grid-template-rows:auto 
 </div>
 
 <script>
-// Example data - replace with your Python JSON export
+// Example data - replace with your JSON export
 const data = [
-  { Universal_Identifier:"UID001", system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true, priority:"High", location:"Zone 1" },
-  { Universal_Identifier:"UID002", system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false, priority:"Medium", location:"Zone 2" },
-  { Universal_Identifier:"UID003", system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true, priority:"Low", location:"Zone 1" },
-  { Universal_Identifier:"UID004", system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false, priority:"High", location:"Zone 3" }
+  { Universal_Identifier:"UID001", system:"Boiler", subsystem:"Pump", item:"Pump A", duration:5, complete:"Complete", priority:"High", location:"Zone 1" },
+  { Universal_Identifier:"UID002", system:"Boiler", subsystem:"Pump", item:"Pump B", duration:8, complete:"Outstanding", priority:"Medium", location:"Zone 2" },
+  { Universal_Identifier:"UID003", system:"Boiler", subsystem:"Valve", item:"Valve A", duration:3, complete:"Deferred", priority:"Low", location:"Zone 1" },
+  { Universal_Identifier:"UID004", system:"Turbine", subsystem:"Rotor", item:"Rotor A", duration:10, complete:"Partially Complete", priority:"High", location:"Zone 3" }
 ];
+
+// Completion status colours
+const statusColors = {
+  "Complete":"mediumseagreen",
+  "Outstanding":"lightcoral",
+  "Deferred":"orange",
+  "Partially Complete":"gold",
+  "In Progress":"dodgerblue"
+};
+
+// Populate legend
+const legendDiv = document.getElementById("legend");
+for(const [status,color] of Object.entries(statusColors)){
+  const span = document.createElement("span");
+  span.style.background=color;
+  span.textContent=status;
+  legendDiv.appendChild(span);
+}
 
 // Initialize DataTable
 const table = $('#maintenanceTable').DataTable({
@@ -73,7 +95,7 @@ const table = $('#maintenanceTable').DataTable({
     { data:"subsystem" },
     { data:"item" },
     { data:"duration" },
-    { data:"complete", render: d=>d ? "Yes" : "No" },
+    { data:"complete" },
     { data:"priority" },
     { data:"location" }
   ],
@@ -81,20 +103,25 @@ const table = $('#maintenanceTable').DataTable({
   fixedHeader:true
 });
 
-// Column filters
+// Add dropdown filters for each column
 $('#maintenanceTable thead tr#filterRow th').each(function(i){
-  $('input', this).on('keyup change', function(){
-    if(table.column(i).search() !== this.value){
-      table.column(i).search(this.value).draw();
+  const col = table.column(i);
+  const select = $('<select><option value="">All</option></select>')
+    .appendTo($(this).empty())
+    .on('change', function(){
+      const val = $.fn.dataTable.util.escapeRegex($(this).val());
+      col.search(val ? '^'+val+'$' : '', true, false).draw();
       updateTreemapFromTable();
-    }
-  });
+    });
+  
+  // Populate dropdown with unique values
+  col.data().unique().sort().each(d=>select.append(`<option value="${d}">${d}</option>`));
 });
 
 // Summary counts
 function updateSummary(currentData){
-  const completeItems = currentData.filter(d=>d.complete);
-  const outstandingItems = currentData.filter(d=>!d.complete);
+  const completeItems = currentData.filter(d=>d.complete==="Complete");
+  const outstandingItems = currentData.filter(d=>d.complete!=="Complete");
   const summary = `
     Complete: ${completeItems.length} tasks (${completeItems.reduce((a,d)=>a+d.duration,0)} days) |
     Outstanding: ${outstandingItems.length} tasks (${outstandingItems.reduce((a,d)=>a+d.duration,0)} days)
@@ -119,12 +146,13 @@ function drawTreemap(filteredData, colorMode="complete"){
       labels.push(sub); parents.push(sys); values.push(subItems.reduce((sum,d)=>sum+d.duration,0)); colors.push("#aaa"); hovertexts.push("");
 
       subItems.forEach(item=>{
-        labels.push(item.Universal_Identifier);  // Use unique ID for Plotly labels
+        labels.push(item.Universal_Identifier); // unique ID
         parents.push(sub);
         values.push(item.duration);
 
-        if(colorMode==="complete") colors.push(item.complete ? "mediumseagreen" : "lightcoral");
-        else {
+        if(colorMode==="complete"){
+          colors.push(statusColors[item.complete] || "grey");
+        } else {
           const min = Math.min(...filteredData.map(d=>d.duration));
           const max = Math.max(...filteredData.map(d=>d.duration));
           const ratio = (item.duration - min)/(max-min||1);
@@ -138,7 +166,7 @@ function drawTreemap(filteredData, colorMode="complete"){
           System: ${item.system}<br>
           Subsystem: ${item.subsystem}<br>
           Duration: ${item.duration} days<br>
-          Complete: ${item.complete ? "Yes":"No"}<br>
+          Status: ${item.complete}<br>
           Priority: ${item.priority || ""}<br>
           Location: ${item.location || ""}
         `);
@@ -163,7 +191,7 @@ function drawTreemap(filteredData, colorMode="complete"){
     const filtered = data.filter(d=>d.Universal_Identifier===label || d.system===label || d.subsystem===label);
     table.clear().rows.add(filtered.length ? filtered : data).draw();
     updateSummary(filtered.length ? filtered : data);
-    $('#maintenanceTable thead tr#filterRow input').val('');  // reset filters
+    $('#maintenanceTable thead tr#filterRow select').val(''); // reset dropdowns
   });
 }
 
