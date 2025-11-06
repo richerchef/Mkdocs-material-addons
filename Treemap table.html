@@ -2,33 +2,63 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Plotly Treemap + DataTable Filter</title>
+  <title>Maintenance Treemap Dashboard</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css" />
-  <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.noStyle.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" />
   <style>
     body {
       font-family: sans-serif;
       margin: 0;
-      padding: 10px;
       display: grid;
-      grid-template-rows: 60% 40%;
+      grid-template-rows: auto 60% 40%;
       height: 100vh;
+      background: #f5f5f5;
+    }
+    #controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px;
+      background: white;
+      border-bottom: 1px solid #ddd;
     }
     #chart {
       width: 100%;
       height: 100%;
+      background: white;
     }
-    table {
-      width: 100%;
+    #grid {
+      height: 100%;
+      background: white;
+    }
+    select {
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid #aaa;
+      font-size: 14px;
+    }
+    .summary {
+      font-weight: 600;
     }
   </style>
 </head>
 <body>
 
+  <div id="controls">
+    <div>
+      <label>Colour by: </label>
+      <select id="colorMode">
+        <option value="complete">Completion Status</option>
+        <option value="duration">Duration</option>
+      </select>
+    </div>
+    <div class="summary" id="summary"></div>
+  </div>
+
   <div id="chart"></div>
-  <table id="dataTable" class="display"></table>
+  <div id="grid" class="ag-theme-alpine"></div>
 
   <script>
     const data = [
@@ -40,25 +70,31 @@
       { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
     ];
 
-    // --- Initialize DataTable ---
-    const table = $('#dataTable').DataTable({
-      data: data,
-      columns: [
-        { data: 'system', title: 'System' },
-        { data: 'subsystem', title: 'Subsystem' },
-        { data: 'item', title: 'Item' },
-        { data: 'duration', title: 'Duration' },
-        { data: 'complete', title: 'Complete', render: d => d ? "✅" : "❌" }
-      ]
-    });
+    // --- Summary updater ---
+    function updateSummary(currentData) {
+      const completeCount = currentData.filter(d => d.complete).length;
+      const outstanding = currentData.length - completeCount;
+      document.getElementById("summary").textContent =
+        `Complete: ${completeCount} | Outstanding: ${outstanding}`;
+    }
 
-    // --- Build Plotly Treemap ---
-    function drawTreemap(filteredData) {
+    // --- Treemap builder ---
+    function drawTreemap(filteredData, colorMode = "complete") {
+      updateSummary(filteredData);
+
+      // Build hierarchy arrays
       const labels = [], parents = [], values = [], colors = [];
 
-      const colorScale = d => d ? 'mediumseagreen' : 'lightcoral';
+      // Get duration scale if needed
+      const durMin = Math.min(...filteredData.map(d => d.duration));
+      const durMax = Math.max(...filteredData.map(d => d.duration));
+      const durScale = d3.scaleLinear().domain([durMin, durMax]).range(["#fee5d9", "#a50f15"]);
 
-      // Build hierarchy manually
+      const colorFn = d => {
+        if (colorMode === "duration") return durScale(d.duration);
+        return d.complete ? "mediumseagreen" : "lightcoral";
+      };
+
       const systems = [...new Set(filteredData.map(d => d.system))];
       systems.forEach(sys => {
         const sysItems = filteredData.filter(d => d.system === sys);
@@ -79,45 +115,73 @@
             labels.push(item.item);
             parents.push(sub);
             values.push(item.duration);
-            colors.push(colorScale(item.complete));
+            colors.push(colorFn(item));
           });
         });
       });
 
       const trace = {
         type: "treemap",
-        labels, parents, values,
+        labels,
+        parents,
+        values,
         marker: { colors },
+        branchvalues: "total",
         hovertemplate: "<b>%{label}</b><br>Duration: %{value}<extra></extra>"
       };
 
-      const layout = {
-        margin: { t: 20, l: 0, r: 0, b: 0 },
-      };
-
+      const layout = { margin: { t: 10, l: 0, r: 0, b: 0 } };
       Plotly.newPlot("chart", [trace], layout);
 
-      // --- Click handler to filter table ---
-      document.getElementById('chart').on('plotly_click', (event) => {
-        const label = event.points[0].label;
+      // --- Treemap click handler ---
+      document.getElementById("chart").on("plotly_click", e => {
+        const label = e.points[0].label;
         const filtered = data.filter(d =>
           d.system === label || d.subsystem === label || d.item === label
         );
-        if (filtered.length > 0) {
-          table.clear().rows.add(filtered).draw();
-        }
+        grid.setGridOption("rowData", filtered.length ? filtered : data);
+        updateSummary(filtered.length ? filtered : data);
       });
     }
 
-    // Initial draw
-    drawTreemap(data);
+    // --- AG Grid setup ---
+    const gridOptions = {
+      columnDefs: [
+        { field: "system", filter: "agTextColumnFilter" },
+        { field: "subsystem", filter: "agTextColumnFilter" },
+        { field: "item", filter: "agTextColumnFilter" },
+        { field: "duration", filter: "agNumberColumnFilter" },
+        { field: "complete", filter: true, cellRenderer: p => p.value ? "✅" : "❌" }
+      ],
+      rowData: data,
+      defaultColDef: {
+        filter: true,
+        sortable: true,
+        resizable: true
+      },
+      onFilterChanged: () => {
+        const filtered = [];
+        grid.api.forEachNodeAfterFilter(n => filtered.push(n.data));
+        drawTreemap(filtered, document.getElementById("colorMode").value);
+      }
+    };
 
-    // --- Table filtering -> update treemap dynamically ---
-    $('#dataTable').on('search.dt', function() {
-      const filteredData = table.rows({ filter: 'applied' }).data().toArray();
-      drawTreemap(filteredData);
+    const gridDiv = document.querySelector("#grid");
+    const grid = agGrid.createGrid(gridDiv, gridOptions);
+
+    // --- Colour mode dropdown ---
+    document.getElementById("colorMode").addEventListener("change", e => {
+      const mode = e.target.value;
+      const filtered = [];
+      grid.api.forEachNodeAfterFilter(n => filtered.push(n.data));
+      drawTreemap(filtered, mode);
     });
+
+    // --- Initial render ---
+    drawTreemap(data);
   </script>
 
+  <!-- d3 for gradient scale -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
 </body>
 </html>
