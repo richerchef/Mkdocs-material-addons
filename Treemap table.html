@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Maintenance Dashboard</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.noStyle.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" />
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      display: grid;
+      grid-template-columns: 60% 40%;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #treemap {
+      background: #f9f9f9;
+      padding: 10px;
+    }
+    #summary {
+      margin: 5px;
+      font-size: 14px;
+      background: #fff;
+      padding: 5px;
+      border-radius: 4px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.1);
+    }
+    #grid {
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="treemap">
+    <div id="summary">Complete: 0 | Outstanding: 0</div>
+    <svg width="100%" height="90%"></svg>
+  </div>
+
+  <div id="grid" class="ag-theme-alpine"></div>
+
+  <script>
+    // Sample data
+    const data = [
+      { system: "Boiler", subsystem: "Pump", item: "Pump A", duration: 5, complete: true },
+      { system: "Boiler", subsystem: "Pump", item: "Pump B", duration: 8, complete: false },
+      { system: "Boiler", subsystem: "Valve", item: "Valve A", duration: 3, complete: true },
+      { system: "Turbine", subsystem: "Rotor", item: "Rotor A", duration: 10, complete: false },
+      { system: "Turbine", subsystem: "Casing", item: "Casing A", duration: 6, complete: true },
+      { system: "Cooling", subsystem: "Fan", item: "Fan A", duration: 4, complete: false }
+    ];
+
+    // D3 Hierarchy
+    function getHierarchy(filteredData = data) {
+      return d3.stratify()
+        .id(d => `${d.system}-${d.subsystem}-${d.item}`)
+        .parentId(d => {
+          if (d.item) return `${d.system}-${d.subsystem}`;
+          if (d.subsystem) return d.system;
+          return "";
+        })([
+          ...d3.groups(filteredData, d => d.system).map(([system]) => ({ system, id: system })),
+          ...d3.groups(filteredData, d => [d.system, d.subsystem]).map(([system, subsystem]) => ({ system, subsystem, id: `${system}-${subsystem}`, parentId: system })),
+          ...filteredData.map(d => ({ ...d, id: `${d.system}-${d.subsystem}-${d.item}`, parentId: `${d.system}-${d.subsystem}` }))
+        ]);
+    }
+
+    const svg = d3.select("svg");
+    const width = svg.node().clientWidth;
+    const height = svg.node().clientHeight;
+    const color = d3.scaleOrdinal(d3.schemeCategory10);
+
+    function updateSummary(filteredData) {
+      const completeCount = filteredData.filter(d => d.complete).length;
+      const outstandingCount = filteredData.length - completeCount;
+      d3.select("#summary").text(`Complete: ${completeCount} | Outstanding: ${outstandingCount}`);
+    }
+
+    function drawTreemap(filteredData = data) {
+      svg.selectAll("*").remove();
+      updateSummary(filteredData);
+
+      const root = d3.hierarchy(d3.group(filteredData, d => d.system, d => d.subsystem))
+        .sum(d => d.duration)
+        .sort((a, b) => b.value - a.value);
+
+      d3.treemap().size([width, height]).padding(2)(root);
+
+      const nodes = svg.selectAll("g")
+        .data(root.leaves())
+        .join("g")
+        .attr("transform", d => `translate(${d.x0},${d.y0})`);
+
+      nodes.append("rect")
+        .attr("width", d => d.x1 - d.x0)
+        .attr("height", d => d.y1 - d.y0)
+        .attr("fill", d => d.data.complete ? "#6cc070" : "#e57373")
+        .attr("stroke", "#fff")
+        .on("click", (event, d) => {
+          const path = [d.data.system, d.data.subsystem].filter(Boolean);
+          const filtered = data.filter(x =>
+            path.every(p => Object.values(x).includes(p))
+          );
+          gridOptions.api.setRowData(filtered);
+          updateSummary(filtered);
+          drawTreemap(filtered);
+        });
+
+      nodes.append("text")
+        .attr("x", 4)
+        .attr("y", 14)
+        .text(d => d.data.item)
+        .style("font-size", "12px")
+        .style("pointer-events", "none");
+    }
+
+    // AG Grid setup
+    const columnDefs = [
+      { field: "system", filter: "agTextColumnFilter" },
+      { field: "subsystem", filter: "agTextColumnFilter" },
+      { field: "item", filter: "agTextColumnFilter" },
+      { field: "duration", filter: "agNumberColumnFilter" },
+      { field: "complete", filter: true, cellRenderer: p => p.value ? "✅" : "❌" }
+    ];
+
+    const gridOptions = {
+      columnDefs,
+      rowData: data,
+      defaultColDef: { filter: true, sortable: true, resizable: true },
+      onFilterChanged: () => {
+        const filtered = [];
+        gridOptions.api.forEachNodeAfterFilter(node => filtered.push(node.data));
+        drawTreemap(filtered);
+      }
+    };
+
+    new agGrid.Grid(document.getElementById("grid"), gridOptions);
+
+    drawTreemap();
+  </script>
+
+</body>
+</html>
