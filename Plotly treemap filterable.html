@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Generic Tabulator + Plotly Treemap Dashboard</title>
+
+<!-- Tabulator CSS/JS -->
+<link href="https://unpkg.com/tabulator-tables@5.5.0/dist/css/tabulator.min.css" rel="stylesheet">
+<script src="https://unpkg.com/tabulator-tables@5.5.0/dist/js/tabulator.min.js"></script>
+
+<!-- Plotly -->
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<style>
+  html,body { height:100%; margin:0; font-family: Arial, Helvetica, sans-serif; background:#f5f6f7; }
+  #topbar { display:flex; gap:12px; align-items:center; padding:10px; background:#fff; border-bottom:1px solid #ddd; }
+  #controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #chart { width:100%; height:55vh; background:white; padding:6px; box-sizing:border-box; }
+  #table-wrap { padding:10px; background:white; height:40vh; box-sizing:border-box; }
+  #table { height:100%; }
+  select, button { padding:6px 8px; }
+  #summary { margin-left:auto; font-weight:600; color:#333; }
+  #legend { padding:8px 10px; background:#fff; border-bottom:1px solid #eee; display:flex; gap:8px; flex-wrap:wrap; }
+  .legend-pill { color:#fff; padding:4px 8px; border-radius:4px; font-size:13px; }
+  /* Modal */
+  .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:1000; }
+  .modal { background:#fff; padding:18px; width:600px; max-width:95%; border-radius:6px; box-shadow:0 6px 30px rgba(0,0,0,0.2); }
+  .modal h3 { margin:0 0 8px 0; }
+  .modal ul { margin:8px 0 12px 20px; }
+  .modal button { margin-top:8px; }
+</style>
+</head>
+<body>
+
+<!-- Top controls -->
+<div id="topbar">
+  <div id="controls">
+    <label>Hierarchy 1:
+      <select id="hier1"></select>
+    </label>
+
+    <label>Hierarchy 2:
+      <select id="hier2"></select>
+    </label>
+
+    <label>Colour by:
+      <select id="colorBy"></select>
+    </label>
+
+    <label>Size by:
+      <select id="sizeBy"></select>
+    </label>
+
+    <button id="resetBtn">Reset Filters</button>
+  </div>
+
+  <div id="summary">Loading...</div>
+</div>
+
+<!-- Legend -->
+<div id="legend"></div>
+
+<!-- Plotly treemap -->
+<div id="chart"></div>
+
+<!-- Table -->
+<div id="table-wrap">
+  <div id="table"></div>
+</div>
+
+<!-- Validation modal (hidden by default) -->
+<div id="validationModal" style="display:none;" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal" id="modalContent">
+    <h3>Data validation issues</h3>
+    <div id="validationList"></div>
+    <button id="closeModal">Continue (I will fix later)</button>
+  </div>
+</div>
+
+<script>
+/*
+  Usage:
+  - Create data.js in the same folder which defines `const data = [ {...}, {...} ]`
+  - Or modify the sampleData below.
+  - Open index.html in browser.
+*/
+
+/* --------------- SAMPLE FALLBACK DATA (if data.js not present) --------------- 
+   You can remove this sample once you have data.js with `const data = [...]`.
+*/
+if (typeof data === "undefined") {
+  // fallback sample
+  const data = [
+    { Universal_Identifier:"UID001", System:"Boiler", Subsystem:"Pump", Item:"Pump A", Duration:5, Status:"Complete", Priority:"High", Location:"Zone 1" },
+    { Universal_Identifier:"UID002", System:"Boiler", Subsystem:"Pump", Item:"Pump B", Duration:8, Status:"Outstanding", Priority:"Medium", Location:"Zone 2" },
+    { Universal_Identifier:"UID003", System:"Boiler", Subsystem:"Valve", Item:"Valve A", Duration:3, Status:"Deferred", Priority:"Low", Location:"Zone 1" },
+    { Universal_Identifier:"UID004", System:"Turbine", Subsystem:"Rotor", Item:"Rotor A", Duration:25, Status:"Partially Complete", Priority:"High", Location:"Zone 3" },
+    { Universal_Identifier:"UID005", System:"Cooling", Subsystem:"Fan", Item:"Fan A", Duration:1, Status:"Complete", Priority:"Low", Location:"Zone 2" },
+  ];
+  window.__dashboard_data = data;
+} else {
+  // when data.js defines 'data', copy to internal
+  window.__dashboard_data = data;
+}
+
+/* ----------------- Basic helpers ----------------- */
+function isNumericArray(arr) {
+  return arr.every(v => typeof v === 'number' && Number.isFinite(v));
+}
+
+function uniq(arr) {
+  return Array.from(new Set(arr));
+}
+
+/* ----------------- Validation ----------------- */
+function validateDataset(dataset) {
+  const issues = [];
+
+  if (!Array.isArray(dataset) || dataset.length === 0) {
+    issues.push("Dataset is empty or not an array.");
+    return issues;
+  }
+
+  const allKeys = dataset.map(d => Object.keys(d).sort());
+  const firstKeys = JSON.stringify(allKeys[0]);
+  const inconsistentRows = [];
+  for (let i = 1; i < allKeys.length; i++) {
+    if (JSON.stringify(allKeys[i]) !== firstKeys) inconsistentRows.push(i);
+  }
+  if (inconsistentRows.length) issues.push(`Inconsistent row schemas at indices: ${inconsistentRows.join(", ")}.`);
+
+  // duplicates
+  const seen = new Set();
+  const dupIndices = [];
+  dataset.forEach((r,i) => {
+    const s = JSON.stringify(r);
+    if (seen.has(s)) dupIndices.push(i);
+    seen.add(s);
+  });
+  if (dupIndices.length) issues.push(`Found ${dupIndices.length} duplicate rows (first duplicates at indices: ${dupIndices.slice(0,5).join(", ")}).`);
+
+  // too many categories
+  const keys = Object.keys(dataset[0]);
+  keys.forEach(k => {
+    const vals = uniq(dataset.map(r => r[k]).filter(v => v !== null && v !== undefined));
+    if (vals.length > 30) issues.push(`Column "${k}" has ${vals.length} unique values (>${30}) — many unique categories may produce a noisy treemap.`);
+  });
+
+  // numeric column existence
+  const numericCols = keys.filter(k => isNumericArray(dataset.map(r => r[k]).filter(v => v !== null && v !== undefined)));
+  if (numericCols.length === 0) issues.push("No numeric columns found — treemap sizing will be limited. Consider adding a numeric Duration or similar column.");
+
+  return issues;
+}
+
+/* ----------------- Bootstrapping UI ----------------- */
+const originalData = window.__dashboard_data.slice(); // keep original
+let dataset = window.__dashboard_data.slice(); // working data
+let cols = dataset.length ? Object.keys(dataset[0]) : [];
+let uidField = null;
+
+// if Universal_Identifier present, use it; otherwise generate __uid
+if (cols.includes("Universal_Identifier")) {
+  uidField = "Universal_Identifier";
+} else {
+  // generate uids and add to dataset
+  uidField = "__UID";
+  dataset = dataset.map((r, i) => ({ ...r, __UID: `UID_${i+1}` }));
+}
+
+/* perform validation and show modal if issues */
+const issues = validateDataset(dataset);
+if (issues.length) {
+  const modal = document.getElementById("validationModal");
+  const list = document.getElementById("validationList");
+  const ul = document.createElement("ul");
+  issues.forEach(i => {
+    const li = document.createElement("li");
+    li.textContent = i;
+    ul.appendChild(li);
+  });
+  list.appendChild(ul);
+  modal.style.display = "flex";
+  document.getElementById("closeModal").addEventListener("click", () => {
+    modal.style.display = "none";
+  });
+}
+
+/* Recompute columns (in case we added __UID) */
+cols = dataset.length ? Object.keys(dataset[0]) : [];
+
+/* identify numeric columns for size options */
+function detectNumericCols(dataArr) {
+  if (!dataArr || dataArr.length === 0) return [];
+  const keys = Object.keys(dataArr[0]);
+  return keys.filter(k => {
+    const vals = dataArr.map(r => r[k]).filter(v => v !== null && v !== undefined);
+    return vals.length > 0 && isNumericArray(vals);
+  });
+}
+const numericCols = detectNumericCols(dataset);
+
+/* populate control dropdowns generically */
+const hier1 = document.getElementById("hier1");
+const hier2 = document.getElementById("hier2");
+const colorBy = document.getElementById("colorBy");
+const sizeBy = document.getElementById("sizeBy");
+const resetBtn = document.getElementById("resetBtn");
+
+function populateSelect(selectEl, options, defaultVal=null) {
+  selectEl.innerHTML = "";
+  options.forEach(opt => {
+    const o = document.createElement("option");
+    o.value = opt;
+    o.textContent = opt;
+    selectEl.appendChild(o);
+  });
+  if (defaultVal && options.includes(defaultVal)) selectEl.value = defaultVal;
+}
+
+// For usability, put uidField last (or hide it)
+const userCols = cols.filter(c => c !== uidField);
+
+// hierarchy dropdowns: any column but uid
+populateSelect(hier1, userCols, userCols[0] || "");
+populateSelect(hier2, userCols, userCols[1] || (userCols[0] || ""));
+
+// colorBy: allow any column
+populateSelect(colorBy, cols, cols.includes("Status") ? "Status" : cols[0]);
+
+// sizeBy: allow numeric options + 'Count'
+const sizeOptions = ["Count"].concat(numericCols);
+populateSelect(sizeBy, sizeOptions, numericCols[0] || "Count");
+
+/* legend area */
+const legendDiv = document.getElementById("legend");
+function renderLegend(mapping) {
+  legendDiv.innerHTML = "";
+  if (!mapping) return;
+  Object.entries(mapping).forEach(([k, color]) => {
+    const span = document.createElement("div");
+    span.className = "legend-pill";
+    span.style.background = color;
+    span.textContent = k;
+    legendDiv.appendChild(span);
+  });
+}
+
+/* -------------- Tabulator Table ---------------- */
+let table; // Tabulator instance
+
+function buildTabulator(dataArr) {
+  // auto build columns - use select header filters for categorical with limited unique values
+  const sample = dataArr[0] || {};
+  const keys = Object.keys(sample);
+  const columns = keys.map(k => {
+    const colVals = uniq(dataArr.map(r => r[k]).filter(v => v !== null && v !== undefined));
+    const isNum = isNumericArray(colVals);
+    const headerFilter = (!isNum && colVals.length <= 100) ? "select" : "input";
+    const headerFilterParams = headerFilter === "select" ? { values: colVals.sort() } : null;
+    return {
+      title: k,
+      field: k,
+      headerFilter: headerFilter,
+      headerFilterParams: headerFilterParams,
+      hozAlign: isNum ? "right" : "left",
+      widthGrow: k === uidField ? 0.8 : 1
+    };
+  });
+
+  // Destroy existing table if present
+  if (table) {
+    table.destroy();
+    document.getElementById("table").innerHTML = "";
+  }
+
+  table = new Tabulator("#table", {
+    data: dataArr,
+    columns: columns,
+    layout: "fitDataStretch",
+    height: "100%",
+    movableColumns: false,
+    tooltips: true,
+    // sticky header: Tabulator handles header freeze with layout: fitDataStretch and CSS
+  });
+
+  // When table filtered, update treemap
+  table.on("dataFiltered", function(filters, rows){
+    // rows is an array of RowComponent; extract data
+    const visibleData = rows.map(r => r.getData());
+    drawTreemap(visibleData);
+  });
+
+  // row click -> highlight in treemap (we'll set a filter to show that uid)
+  table.on("rowClick", function(e, row){
+    const rdata = row.getData();
+    // set treemap selection by drawing treemap filtered to that uid
+    drawTreemap([rdata]);
+  });
+}
+
+/* --------------- Plotly treemap builder -------------- */
+
+const chartDiv = document.getElementById("chart");
+
+// helper: build treemap nodes from filteredData
+function buildTreemapNodes(filteredData, lvl1, lvl2, sizeByCol, colorCol) {
+
+  // gather level1 and level2 unique values
+  const level1Vals = uniq(filteredData.map(d => d[lvl1] ?? "Unknown"));
+  const level2Vals = uniq(filteredData.map(d => d[lvl2] ?? "Unknown"));
+
+  const labels = [], parents = [], values = [], colors = [], hovertexts = [];
+
+  // mapping to determine label type (for click behavior)
+  const labelType = {}; // label -> {type: "lvl1"|"lvl2"|"leaf", value: value}
+
+  // Add level1 nodes
+  level1Vals.forEach(l1 => {
+    labels.push(l1);
+    parents.push("");
+    values.push(0);
+    colors.push("#e8e8e8");
+    hovertexts.push("");
+    labelType[l1] = { type: "lvl1", value: l1 };
+  });
+
+  // Add level2 nodes (parented to level1)
+  const level2Set = new Set();
+  filteredData.forEach(d => {
+    const l1 = d[lvl1] ?? "Unknown";
+    const l2 = d[lvl2] ?? "Unknown";
+    if (!level2Set.has(`${l1}||${l2}`)) {
+      level2Set.add(`${l1}||${l2}`);
+      labels.push(l2);
+      parents.push(l1);
+      values.push(0);
+      colors.push("#dcdcdc");
+      hovertexts.push("");
+      labelType[l2] = { type: "lvl2", value: l2, parent: l1 };
+    }
+  });
+
+  // Leaves (unique ids)
+  const leaves = filteredData.map(d => {
+    const id = d[uidField];
+    return { id, data: d, parent: d[lvl2] ?? "Unknown" };
+  });
+
+  leaves.forEach(leaf => {
+    labels.push(leaf.id);
+    parents.push(leaf.parent);
+    const val = (sizeByCol === "Count") ? 1 : (Number(leaf.data[sizeByCol]) || 0);
+    values.push(val);
+    hovertexts.push(buildHoverText(leaf.data));
+    labelType[leaf.id] = { type: "leaf", value: leaf.id, data: leaf.data };
+  });
+
+  // Build colours array according to colorCol
+  const colorVals = filteredData.map(d => d[colorCol]);
+  const isNumericColor = colorVals.every(v => typeof v === 'number' && Number.isFinite(v));
+  const colorMap = {};
+
+  if (isNumericColor) {
+    const nums = colorVals;
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    // map numeric to gradient green->yellow->red
+    // We'll apply color for each label that is a leaf (match by id -> data)
+    // Build mapping for leaves
+    filteredData.forEach(d => {
+      const v = Number(d[colorCol]) || 0;
+      const ratio = (v - min) / (max - min || 1);
+      const r = Math.round(255 * ratio);
+      const g = Math.round(255 * (1 - ratio));
+      colorMap[d[uidField]] = `rgb(${r},${g},0)`;
+    });
+    renderLegend(null); // no categorical legend
+  } else {
+    // categorical: get unique categories and map to HSL palette
+    const uniqCats = uniq(colorVals.map(v => (v === undefined || v === null) ? "Unknown" : String(v)));
+    uniqCats.forEach((cat, i) => {
+      const hue = (i * 45) % 360;
+      const col = `hsl(${hue},70%,45%)`;
+      colorMap[cat] = col;
+    });
+    // render legend: use mapping of category->color
+    const legendMapping = {};
+    uniqCats.forEach(cat => { legendMapping[cat] = colorMap[cat]; });
+    renderLegend(legendMapping);
+  }
+
+  // assign colors array appropriately: for lvl1/lvl2 keep neutral unless override by colorCol for aggregated nodes?
+  // For simplicity: colour leaf nodes (UID labels) by colorMap, keep parents neutral.
+  for (let i = 0; i < labels.length; i++) {
+    const lbl = labels[i];
+    if (labelType[lbl] && labelType[lbl].type === "leaf") {
+      // find corresponding data
+      const d = dataset.find(x => x[uidField] === lbl);
+      if (isNumericColor) colors[i] = colorMap[lbl] || "#cccccc";
+      else {
+        const cat = (d[colorCol] === undefined || d[colorCol] === null) ? "Unknown" : String(d[colorCol]);
+        colors[i] = colorMap[cat] || "#cccccc";
+      }
+    } else {
+      // parent nodes: optionally set a neutral palette or derive aggregated color — keep neutral
+      colors[i] = "#f2f2f2";
+    }
+  }
+
+  return { labels, parents, values, colors, hovertexts, labelType };
+}
+
+function buildHoverText(row) {
+  // Generic hover text: include all columns and values, excluding internal uid field if desired
+  const parts = [];
+  Object.keys(row).forEach(k => {
+    if (k === uidField) return; // show item label separately if wanted
+    parts.push(`<b>${k}:</b> ${row[k]}`);
+  });
+  return parts.join("<br>");
+}
+
+let lastTreemapLabelType = null;
+
+function drawTreemap(filteredData) {
+  // if no data, clear
+  const dataToUse = (filteredData && filteredData.length) ? filteredData : dataset;
+
+  // get current control choices
+  const lvl1 = document.getElementById("hier1").value || Object.keys(dataset[0])[0];
+  const lvl2 = document.getElementById("hier2").value || Object.keys(dataset[0])[1] || lvl1;
+  let colorCol = document.getElementById("colorBy").value || Object.keys(dataset[0])[0];
+  let sizeCol = document.getElementById("sizeBy").value || "Count";
+
+  // ensure sizeCol exists if numeric selected; fallback to Count
+  if (sizeCol !== "Count" && !dataset.some(r => typeof r[sizeCol] === 'number')) {
+    sizeCol = "Count";
+    document.getElementById("sizeBy").value = "Count";
+  }
+
+  // Update summary
+  updateSummary(dataToUse);
+
+  const nodes = buildTreemapNodes(dataToUse, lvl1, lvl2, sizeCol, colorCol);
+
+  const trace = {
+    type: "treemap",
+    labels: nodes.labels,
+    parents: nodes.parents,
+    values: nodes.values,
+    marker: { colors: nodes.colors },
+    branchvalues: "total",
+    tiling: { packing: "squarify", pad: 0 },
+    root: { color: "rgba(0,0,0,0)" },
+    domain: { x: [0, 1], y: [0, 1] },
+    hoverinfo: "text",
+    hovertext: nodes.hovertexts,
+    textinfo: "label+value"
+  };
+
+  const layout = {
+    margin: { l: 0, r: 0, t: 6, b: 6 },
+    autosize: true,
+    uniformtext: { mode: "hide", minsize: 10 }
+  };
+
+  Plotly.newPlot(chartDiv, [trace], layout, { responsive: true });
+
+  // map label types to enable filtering when clicked
+  lastTreemapLabelType = nodes.labelType;
+
+  // click handler
+  chartDiv.on("plotly_click", function(e) {
+    const label = e.points[0].label;
+    const info = lastTreemapLabelType[label];
+    if (!info) return;
+
+    // clear existing filters and then set relevant filter
+    table.clearFilter();
+
+    if (info.type === "leaf") {
+      // filter by UID field
+      table.setFilter(uidField, "=", label);
+    } else if (info.type === "lvl2") {
+      // filter by level2 field (hier2)
+      const lvl2val = info.value;
+      const hier2name = document.getElementById("hier2").value;
+      table.setFilter(hier2name, "=", lvl2val);
+    } else if (info.type === "lvl1") {
+      const lvl1val = info.value;
+      const hier1name = document.getElementById("hier1").value;
+      table.setFilter(hier1name, "=", lvl1val);
+    }
+  });
+}
+
+/* -------------- Summary updater --------------- */
+function updateSummary(currentData) {
+  const dataArr = currentData && currentData.length ? currentData : dataset;
+  const total = dataArr.length;
+  // find a numeric column to report total days (prefers Duration-like names)
+  const durKeys = Object.keys(dataArr[0]).filter(k => /duration|days|time|cost|hours/i.test(k));
+  let sumDaysText = "";
+  if (durKeys.length) {
+    const key = durKeys[0];
+    const sum = dataArr.reduce((s, r) => s + (Number(r[key]) || 0), 0);
+    sumDaysText = ` | ${key}: ${sum}`;
+  }
+  document.getElementById("summary").textContent = `Rows: ${total}${sumDaysText}`;
+}
+
+/* --------------- Wiring controls --------------- */
+
+function initUI() {
+  // build tabulator with original dataset
+  buildTabulator(dataset);
+
+  // initial treemap
+  drawTreemap(dataset);
+
+  // wire control changes
+  document.getElementById("hier1").addEventListener("change", () => {
+    // avoid same as hier2
+    if (hier1.value === hier2.value) {
+      alert("Hierarchy level 1 and 2 must be different");
+      return;
+    }
+    drawTreemap(table.getData());
+  });
+  document.getElementById("hier2").addEventListener("change", () => {
+    if (hier1.value === hier2.value) {
+      alert("Hierarchy level 1 and 2 must be different");
+      return;
+    }
+    drawTreemap(table.getData());
+  });
+  document.getElementById("colorBy").addEventListener("change", () => {
+    // redraw treemap using filtered table data
+    drawTreemap(table.getData());
+  });
+  document.getElementById("sizeBy").addEventListener("change", () => {
+    drawTreemap(table.getData());
+  });
+
+  // reset button
+  resetBtn.addEventListener("click", () => {
+    // clear Tabulator filters
+    table.clearFilter(true);
+    // reset dropdowns
+    populateSelect(hier1, userCols, userCols[0] || "");
+    populateSelect(hier2, userCols, userCols[1] || (userCols[0] || ""));
+    populateSelect(colorBy, cols, cols[0]);
+    populateSelect(sizeBy, sizeOptions, sizeOptions[0]);
+    drawTreemap(dataset);
+  });
+}
+
+/* init everything */
+initUI();
+
+</script>
+</body>
+</html>
