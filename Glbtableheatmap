@@ -1,0 +1,324 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>3D Maintenance Viewer — Row hover/select + reliable tooltip</title>
+
+<!-- Babylon -->
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+
+<!-- Tabulator -->
+<link href="https://unpkg.com/tabulator-tables@5.5.2/dist/css/tabulator.min.css" rel="stylesheet">
+<script src="https://unpkg.com/tabulator-tables@5.5.2/dist/js/tabulator.min.js"></script>
+
+<style>
+  body{margin:0;font-family:Arial;height:100vh;display:flex;flex-direction:column}
+  #viewer{height:60vh;position:relative;background:transparent}
+  #controls{display:flex;gap:8px;align-items:center;padding:8px;background:#222;color:#fff}
+  #table{height:36vh}
+  .tooltip3d{position:absolute;padding:8px 10px;background:rgba(0,0,0,0.85);color:#fff;border-radius:6px;pointer-events:none;opacity:0;transition:opacity .08s;font-size:13px;z-index:10}
+  button{padding:6px 10px;border-radius:4px;border:0;cursor:pointer}
+  input[type="search"]{padding:6px 8px;border-radius:4px;border:0;width:220px}
+  /* highlight style for Tabulator rows */
+  .tabulator-row.highlight { background:#ffe08a !important; }
+</style>
+</head>
+<body>
+
+<div id="viewer"></div>
+
+<div id="controls">
+  <button id="resetBtn">Reset</button>
+  <button id="viewX">X View</button>
+  <button id="viewY">Y View</button>
+  <button id="viewZ">Z View</button>
+  <div style="margin-left:auto"><input id="searchInput" type="search" placeholder="Search table…" /></div>
+</div>
+
+<div id="table"></div>
+<div id="tooltip" class="tooltip3d"></div>
+
+<script>
+// -----------------------------
+// Hard-coded mesh/task data
+// -----------------------------
+const meshData = [
+  { mesh:"AMS1", number:12, task:"Inspect valve", due:"2025-11-20" },
+  { mesh:"AMS1", number:12, task:"Replace filter", due:"2025-11-25" },
+  { mesh:"AMS2", number:5, task:"Lubricate pump", due:"2025-12-01" },
+  { mesh:"Blk", number:20, task:"Full overhaul", due:"2025-11-29" },
+  { mesh:"Blk", number:20, task:"Safety inspection", due:"2025-11-30" },
+  { mesh:"Test 1", number:2, task:"Check wiring", due:"2025-11-15" },
+];
+
+// -----------------------------
+// Tabulator table (group by mesh)
+// -----------------------------
+const table = new Tabulator("#table", {
+  data: meshData,
+  layout:"fitColumns",
+  groupBy:"mesh",
+  groupToggleElement:"header",
+  columns:[
+    {title:"Mesh", field:"mesh", width:140},
+    {title:"Task", field:"task"},
+    {title:"Due", field:"due", width:120},
+    {title:"Number", field:"number", width:100}
+  ],
+  rowClick:function(e, row){ // click a row => focus mesh
+    const data = row.getData();
+    focusMesh(data.mesh);
+  }
+});
+
+// Search that filters live
+const searchInput = document.getElementById('searchInput');
+searchInput.addEventListener('input', (ev) => {
+  const q = ev.target.value.trim().toLowerCase();
+  if(q === "") { table.clearFilter(); return; }
+  table.setFilter(function(data){
+    return ( (data.mesh||"").toString().toLowerCase().includes(q) ||
+             (data.task||"").toString().toLowerCase().includes(q) ||
+             (data.due||"").toString().toLowerCase().includes(q) ||
+             (data.number||"").toString().toLowerCase().includes(q) );
+  });
+});
+
+// -----------------------------
+// Babylon scene
+// -----------------------------
+const VIEWER = document.getElementById('viewer');
+const canvas = document.createElement('canvas');
+canvas.style.width = "100%";
+canvas.style.height = "100%";
+canvas.style.display = "block";
+VIEWER.appendChild(canvas);
+
+// create engine with alpha to allow transparent background
+const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer:true,stencil:true});
+const scene = new BABYLON.Scene(engine);
+// transparent background
+scene.clearColor = new BABYLON.Color4(0,0,0,0);
+
+// camera & lights
+const camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, Math.PI/3, 25, BABYLON.Vector3.Zero(), scene);
+camera.attachControl(canvas, true);
+const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(1,1,0), scene);
+
+// highlight layer used for hover
+const highlightLayer = new BABYLON.HighlightLayer("hl", scene);
+
+// store meshes
+const meshMap = new Map();
+let lastFocusedMesh = null;
+const MIN_RADIUS = 6; // limit for zoom
+
+// helper: heat color (0..1) -> rgb
+function heatColor(t){
+  t = Math.max(0, Math.min(1,t));
+  const r = Math.round(255 * Math.pow(t,0.9));
+  const g = Math.round(255 * Math.sin(Math.PI * t));
+  const b = Math.round(255 * (1 - Math.pow(t,1.1)));
+  return new BABYLON.Color3(r/255, g/255, b/255);
+}
+
+// compute counts per mesh
+const counts = {};
+meshData.forEach(d => { counts[d.mesh] = (counts[d.mesh]||0) + 1; });
+
+// track last mouse position relative to viewport
+const mousePos = { x:0, y:0 };
+canvas.addEventListener('mousemove', (e) => {
+  mousePos.x = e.clientX;
+  mousePos.y = e.clientY;
+});
+
+// load the model (hardcoded)
+BABYLON.SceneLoader.Append("", "example_model.glb", scene, function() {
+  // index meshes by name (ignore internal nodes with no name)
+  scene.meshes.forEach(m => {
+    if(!m.name) return;
+    meshMap.set(m.name, m);
+  });
+
+  // apply color by count (normalize by max count)
+  const maxCount = Math.max(...Object.values(counts), 1);
+  meshMap.forEach((mesh, name) => {
+    const c = counts[name] || 0;
+    const t = c / maxCount;
+    const mat = new BABYLON.StandardMaterial(name + "_mat", scene);
+    mat.diffuseColor = heatColor(t);
+    mat.specularColor = new BABYLON.Color3(0,0,0);
+    mat.backFaceCulling = false;
+    mat.alpha = 1;
+    mesh.material = mat;
+    mesh.visibility = 1;
+  });
+
+  // Add table-row <-> mesh linking:
+  addTableRowInteractions();
+
+  // setup robust canvas hover tooltip using scene.pick()
+  setupCanvasHoverTooltip();
+
+  // setup canvas click to focus mesh as well
+  setupCanvasClicks();
+});
+
+// -----------------------------
+// Table row interactions
+// - hover row => highlight mesh
+// - leave row => clear highlight
+// - click row => focus mesh (already set in rowClick)
+// -----------------------------
+function addTableRowInteractions(){
+  // Tabulator gives row formatters; use rowMouseEnter / Leave
+  table.on("rowMouseEnter", function(e, row){
+    const name = row.getData().mesh;
+    const mesh = meshMap.get(name);
+    if(mesh){
+      highlightLayer.addMesh(mesh, BABYLON.Color3.White());
+    }
+    // add visual highlight to row
+    row.getElement().classList.add("highlight");
+  });
+
+  table.on("rowMouseLeave", function(e, row){
+    const name = row.getData().mesh;
+    const mesh = meshMap.get(name);
+    if(mesh){
+      highlightLayer.removeMesh(mesh);
+    }
+    row.getElement().classList.remove("highlight");
+  });
+
+  // rowClick already defined in Tabulator constructor to focusMesh
+}
+
+// -----------------------------
+// Canvas hover tooltip via scene.pick
+// -----------------------------
+const tooltipEl = document.getElementById('tooltip');
+
+function setupCanvasHoverTooltip(){
+  // use a throttled mousemove to avoid excessive picks
+  let lastTime = 0;
+  const throttleMs = 16; // ~60fps
+  canvas.addEventListener('mousemove', (ev) => {
+    const now = performance.now();
+    if(now - lastTime < throttleMs) return;
+    lastTime = now;
+
+    // compute mouse coords relative to canvas
+    const rect = canvas.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+
+    // pick using scene.pick (x,y in canvas coordinates)
+    const pick = scene.pick(x, y);
+    highlightLayer.removeAllMeshes();
+    tooltipEl.style.opacity = 0;
+
+    if(pick && pick.hit && pick.pickedMesh){
+      const mesh = pick.pickedMesh;
+      const name = mesh.name;
+      const rows = meshData.filter(r => r.mesh === name);
+      if(rows.length > 0){
+        // build HTML summary
+        let html = `<strong>${name}</strong><br>`;
+        rows.forEach(r => { html += `${r.task} — ${r.due}<br>`; });
+
+        tooltipEl.innerHTML = html;
+
+        // position using client coords
+        tooltipEl.style.left = (ev.clientX + 12) + "px";
+        tooltipEl.style.top  = (ev.clientY + 12) + "px";
+        tooltipEl.style.opacity = 1;
+
+        highlightLayer.addMesh(mesh, BABYLON.Color3.White());
+        return;
+      }
+    }
+    // default hide
+    tooltipEl.style.opacity = 0;
+    highlightLayer.removeAllMeshes();
+  });
+}
+
+// -----------------------------
+// Canvas click to focus mesh (also selects table group)
+// -----------------------------
+function setupCanvasClicks(){
+  canvas.addEventListener('click', (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+    const pick = scene.pick(x, y);
+    if(pick && pick.hit && pick.pickedMesh){
+      const mesh = pick.pickedMesh;
+      // filter table to that mesh and expand group
+      table.setFilter("mesh", "=", mesh.name);
+      table.getGroups().forEach(g => { if(g.key === mesh.name) g.expand(); });
+      focusMesh(mesh.name);
+    }
+  });
+}
+
+// -----------------------------
+// focusMesh: highlight + fade others + camera pan/zoom with limit
+// -----------------------------
+function focusMesh(name){
+  const mesh = meshMap.get(name);
+  if(!mesh) return;
+
+  // If already focused on same mesh and camera radius is at or below min, do nothing
+  if(lastFocusedMesh === name && camera.radius <= MIN_RADIUS) {
+    scene.meshes.forEach(m => m.visibility = (m === mesh ? 1 : 0.1));
+    return;
+  }
+
+  lastFocusedMesh = name;
+
+  // fade others to 0.1
+  scene.meshes.forEach(m => { m.visibility = (m === mesh ? 1 : 0.1); });
+
+  // camera animation: move target to mesh center
+  const center = mesh.getBoundingInfo().boundingBox.centerWorld.clone();
+
+  BABYLON.Animation.CreateAndStartAnimation("camTargetAnim", camera, "target", 60, 30, camera.target.clone(), center.clone(), BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT);
+
+  // camera radius: only decrease down to MIN_RADIUS
+  if (camera.radius > MIN_RADIUS) {
+    const newRadius = Math.max(MIN_RADIUS, camera.radius * 0.45);
+    BABYLON.Animation.CreateAndStartAnimation("camRadiusAnim", camera, "radius", 60, 30, camera.radius, newRadius, BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT);
+  }
+}
+
+// reset everything
+document.getElementById('resetBtn').addEventListener('click', () => {
+  table.clearFilter();
+  searchInput.value = "";
+  tooltipEl.style.opacity = 0;
+  highlightLayer.removeAllMeshes();
+  scene.meshes.forEach(m => { m.visibility = 1; });
+  lastFocusedMesh = null;
+
+  // nice camera reset
+  const defaultTarget = new BABYLON.Vector3(0,0,0);
+  BABYLON.Animation.CreateAndStartAnimation("camResetT", camera, "target", 60, 30, camera.target.clone(), defaultTarget, BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT);
+  BABYLON.Animation.CreateAndStartAnimation("camResetR", camera, "radius", 60, 30, camera.radius, 25, BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT);
+});
+
+// view via axis
+document.getElementById('viewX').addEventListener('click', () => { camera.alpha = 0; camera.beta = Math.PI/2; });
+document.getElementById('viewY').addEventListener('click', () => { camera.alpha = Math.PI/2; camera.beta = Math.PI/2; });
+document.getElementById('viewZ').addEventListener('click', () => { camera.alpha = Math.PI/2; camera.beta = 0.001; });
+
+// render loop and resize
+engine.runRenderLoop(() => scene.render());
+window.addEventListener('resize', () => engine.resize());
+</script>
+
+</body>
+</html>
